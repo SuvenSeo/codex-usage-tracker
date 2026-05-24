@@ -22,6 +22,8 @@ It reads your local Codex logs and generates a dashboard for:
 - estimated Codex credits
 - API-equivalent cost estimates
 - active coding time
+- terminal reports for daily/project/model/session views
+- privacy-safe redaction for sharing
 - optional WakaTime `ai coding` heartbeats
 
 Why I made it: I wanted a simple way to understand what my AI coding sessions were actually costing and where the time was going, without uploading my transcripts anywhere.
@@ -42,6 +44,6 @@ Repo: https://github.com/SuvenSeo/codex-usage-tracker
 
 Show HN: I built a local usage dashboard for the Codex app
 
-Codex stores useful local session metadata, including token usage. I wrapped that into a small local-first dashboard that shows token totals, estimated Codex credits, per-project/thread breakdowns, and optional WakaTime AI-coding heartbeats.
+Codex stores useful local session metadata, including token usage. I wrapped that into a small local-first dashboard that shows token totals, estimated Codex credits, per-project/thread breakdowns, terminal reports, privacy-safe exports, and optional WakaTime AI-coding heartbeats.
 
 The main goal is transparency: know which AI coding sessions are expensive and where your time is going, without uploading transcripts to a third-party service.

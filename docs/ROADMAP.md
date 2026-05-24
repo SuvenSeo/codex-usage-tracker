@@ -12,6 +12,17 @@ The strongest near-term position is:
 Do not compete head-on with large multi-agent tools first. Own the Codex-specific
 workflow, then expand after the product feels polished.
 
+## Current Alpha
+
+Already implemented in the repo:
+
+- Static local HTML/CSV/JSON reports.
+- Terminal reports for daily, weekly, monthly, session, project, and model views.
+- `doctor` and `demo` first-run commands.
+- `--redact` and `--hash-projects` privacy controls.
+- Optional WakaTime `ai coding` heartbeat sync.
+- GitHub CI, issue templates, and a trusted-publishing PyPI release workflow.
+
 ## Research Snapshot
 
 Adjacent tools show what developers already star and share:
@@ -163,14 +174,13 @@ Goal: expand only when the Codex experience is strong.
 
 Suggested first issues:
 
-1. Add `doctor` command.
-2. Add `demo` command with bundled fake logs.
-3. Add CLI reports: `daily`, `weekly`, `monthly`, `session`.
-4. Add `--redact` and `--hash-projects`.
-5. Add `serve` local dashboard.
-6. Add WakaTime rich AI metadata sync.
-7. Add pricing table source/version metadata.
-8. Add PyPI release workflow.
-9. Add README comparison table.
-10. Add demo GIF and public screenshot export.
-
+1. Add `serve` local dashboard.
+2. Add WakaTime rich AI metadata sync.
+3. Add pricing table source/version metadata.
+4. Add statusline output for shells, Starship, tmux, and PowerShell prompts.
+5. Add budget thresholds and non-zero exit codes.
+6. Add public screenshot export.
+7. Add parser interface for future multi-agent support.
+8. Add install docs for `pipx`, `uv tool`, and direct GitHub releases.
+9. Add short demo GIF.
+10. Add OpenAI API Costs sync for API usage, clearly separate from Codex app credits.

@@ -11,7 +11,7 @@ This tool is designed to be local-first.
 ## What It Writes
 
 - Local JSON, CSV, and HTML reports under `out/` by default
-- `.tracker_state.json`, used to avoid sending duplicate WakaTime heartbeats
+- A state file used to avoid sending duplicate WakaTime heartbeats. The default CLI location is `~/.codex-usage-tracker/state.json`; the included Windows scheduled task stores `.tracker_state.json` in the repo checkout.
 
 ## What Can Be Sensitive
 
@@ -25,6 +25,22 @@ Generated reports can contain:
 
 The repository `.gitignore` excludes generated reports by default. Review reports before sharing screenshots or files publicly.
 
+## Share-Safe Reports
+
+Use:
+
+```bash
+codex-usage-tracker --redact --hash-projects report
+```
+
+`--redact` hides thread titles, local folders, and log paths. `--hash-projects` replaces project names with stable anonymous labels.
+
+For issue reports, prefer:
+
+```bash
+codex-usage-tracker --redact --hash-projects doctor
+```
+
 ## WakaTime Sync
 
 When `sync-wakatime` is enabled, the tool sends WakaTime heartbeats with:
@@ -35,4 +51,3 @@ When `sync-wakatime` is enabled, the tool sends WakaTime heartbeats with:
 - Timestamp
 
 It does not send token counts, prompts, responses, or Codex transcript content to WakaTime.
-

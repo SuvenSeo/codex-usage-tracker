@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 import codex_app_tracker as tracker
@@ -75,6 +76,45 @@ class CodexUsageTrackerTests(unittest.TestCase):
             tracker.project_name_from_cwd("C:\\Projects\\example-app"),
             "example-app",
         )
+
+    def test_date_filter_uses_last_activity(self):
+        early = {
+            "thread_id": "early",
+            "started_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
+            "ended_at": datetime(2026, 5, 1, 1, tzinfo=timezone.utc),
+        }
+        late = {
+            "thread_id": "late",
+            "started_at": datetime(2026, 5, 3, tzinfo=timezone.utc),
+            "ended_at": datetime(2026, 5, 3, 1, tzinfo=timezone.utc),
+        }
+        filtered = tracker.filter_threads_by_date([early, late], since="2026-05-02")
+        self.assertEqual([thread["thread_id"] for thread in filtered], ["late"])
+
+    def test_privacy_redacts_paths_and_titles(self):
+        thread = {
+            "thread_id": "abc",
+            "title": "Private client work",
+            "cwd": "C:\\Secret\\client-app",
+            "project": "client-app",
+            "path": "C:\\Users\\suven\\.codex\\sessions\\rollout.jsonl",
+            "usage": tracker.zero_usage(),
+            "daily_usage": {},
+            "active_daily": {},
+            "tool_counts": {},
+            "event_timestamps": [],
+        }
+        redacted = tracker.apply_privacy([thread], redact=True, hash_projects=True)[0]
+        self.assertEqual(redacted["title"], "(redacted)")
+        self.assertEqual(redacted["cwd"], "")
+        self.assertEqual(redacted["path"], "")
+        self.assertTrue(redacted["project"].startswith("project-"))
+
+    def test_demo_threads_are_aggregatable(self):
+        threads = tracker.demo_threads()
+        summary = tracker.aggregate_threads(threads)
+        self.assertGreaterEqual(len(threads), 3)
+        self.assertGreater(summary["usage"]["total_tokens"], 0)
 
 
 if __name__ == "__main__":
