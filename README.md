@@ -34,7 +34,7 @@ This tool gives you those answers locally, without uploading Codex transcripts t
 Clone the repo:
 
 ```bash
-git clone https://github.com/SuvenSEO/codex-usage-tracker.git
+git clone https://github.com/SuvenSeo/codex-usage-tracker.git
 cd codex-usage-tracker
 ```
 
