@@ -102,6 +102,10 @@ def project_name_from_cwd(cwd: str) -> str:
     cwd = clean_windows_path(cwd)
     if not cwd:
         return "(unknown)"
+    if "\\" in cwd:
+        trimmed = cwd.rstrip("\\/")
+        if trimmed:
+            return re.split(r"[\\/]+", trimmed)[-1] or trimmed
     try:
         return Path(cwd).name or cwd
     except Exception:

@@ -70,7 +70,12 @@ class CodexUsageTrackerTests(unittest.TestCase):
         expected = (400 / 1_000_000) * 125.0 + (600 / 1_000_000) * 12.5 + (100 / 1_000_000) * 750.0
         self.assertAlmostEqual(credits, expected)
 
+    def test_windows_project_name_on_any_platform(self):
+        self.assertEqual(
+            tracker.project_name_from_cwd("C:\\Projects\\example-app"),
+            "example-app",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-
