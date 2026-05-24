@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-usage-tracker"
+version = "0.1.0"
+description = "Local usage dashboard for Codex app tokens, estimated credits, and WakaTime AI coding time."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "SuvenSEO" }
+]
+keywords = [
+  "codex",
+  "openai",
+  "wakatime",
+  "usage",
+  "tokens",
+  "dashboard",
+  "developer-tools",
+  "ai-coding"
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development",
+  "Topic :: System :: Monitoring",
+]
+
+[project.urls]
+Homepage = "https://github.com/SuvenSEO/codex-usage-tracker"
+Issues = "https://github.com/SuvenSEO/codex-usage-tracker/issues"
+
+[project.scripts]
+codex-usage-tracker = "codex_app_tracker:main"
+
+[tool.setuptools]
+py-modules = ["codex_app_tracker"]
+

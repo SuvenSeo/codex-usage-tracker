@@ -1,0 +1,3 @@
+thread_id,title,project,cwd,model,reasoning_effort,started_at,ended_at,active_minutes_est,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,estimated_codex_credits,estimated_api_usd_equiv,path
+019example000000000000000000000001,Build dashboard demo,example-app,C:\Projects\example-app,gpt-5.5,xhigh,2026-05-01 10:00:00,2026-05-01 10:45:00,45.0,850000,700000,12000,3500,862000,27.5,1.1,/home/you/.codex/sessions/2026/05/01/rollout-example.jsonl
+019example000000000000000000000002,Fix auth bug,api-service,C:\Projects\api-service,gpt-5.4,medium,2026-05-01 11:10:00,2026-05-01 11:35:00,25.0,420000,300000,6500,1200,426500,10.2,0.41,/home/you/.codex/sessions/2026/05/01/rollout-example-2.jsonl
