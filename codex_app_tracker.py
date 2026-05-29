@@ -15,11 +15,13 @@ import hashlib
 import html
 import json
 import os
+import queue
 import re
 import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -37,6 +39,10 @@ TRACKER_DIR = Path(__file__).resolve().parent
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_OUTPUT_DIR = Path.cwd() / "out"
 DEFAULT_STATE_FILE = Path.home() / ".codex-usage-tracker" / "state.json"
+PRICING_SOURCE_DATE = "2026-05-29"
+CODEX_RATE_CARD_URL = "https://help.openai.com/en/articles/20001106-codex-rate-card"
+API_PRICING_URL = "https://developers.openai.com/api/docs/pricing"
+API_PRICING_BASIS = "standard short-context text token rates"
 
 USAGE_FIELDS = (
     "input_tokens",
@@ -46,8 +52,9 @@ USAGE_FIELDS = (
     "total_tokens",
 )
 
-# Rates captured from public OpenAI pages on 2026-05-23.
-# Codex app usage is credit-based. API USD is only an equivalent estimate.
+# Rates verified against official OpenAI pages on 2026-05-29.
+# Codex credit estimates use the token-based Codex rate card. API USD is an
+# API-pricing equivalent, not the user's official Codex invoice.
 MODEL_RATES: dict[str, dict[str, dict[str, float]]] = {
     "gpt-5.5": {
         "codex_credits": {"input": 125.0, "cached_input": 12.5, "output": 750.0},
@@ -186,6 +193,16 @@ def estimate_amount(usage: dict[str, int], model: str | None, rate_kind: str) ->
         + (cached / 1_000_000.0) * rate["cached_input"]
         + (output / 1_000_000.0) * rate["output"]
     )
+
+
+def pricing_metadata() -> dict[str, Any]:
+    return {
+        "source_date": PRICING_SOURCE_DATE,
+        "codex_rate_card_url": CODEX_RATE_CARD_URL,
+        "api_pricing_url": API_PRICING_URL,
+        "api_pricing_basis": API_PRICING_BASIS,
+        "caveat": "Codex credits are estimated from local token logs and official token rates. Official billing, remaining credits, fast mode uplifts, taxes, and legacy plan exceptions must be checked in Codex/OpenAI billing.",
+    }
 
 
 def read_thread_db(codex_home: Path) -> dict[str, dict[str, Any]]:
@@ -605,6 +622,7 @@ def aggregate_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
         "estimated_codex_credits": total_credits,
         "estimated_api_usd_equiv": total_usd,
         "active_seconds": total_active_seconds,
+        "pricing": pricing_metadata(),
         "daily": sorted(daily_rows, key=lambda item: item["date"]),
         "projects": sorted(projects.values(), key=lambda item: usage_total(item["usage"]), reverse=True),
         "models": sorted(models.values(), key=lambda item: usage_total(item["usage"]), reverse=True),
@@ -784,6 +802,198 @@ def grouped_daily_rows(summary: dict[str, Any], period: str) -> list[dict[str, A
     ]
 
 
+def validate_refresh_seconds(value: int) -> int:
+    if value < 2:
+        raise ValueError("refresh interval must be at least 2 seconds")
+    return value
+
+
+def parse_refresh_seconds(value: str) -> int:
+    try:
+        seconds = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("refresh interval must be an integer") from exc
+    try:
+        return validate_refresh_seconds(seconds)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def latest_thread_activity(threads: list[dict[str, Any]]) -> datetime | None:
+    latest: datetime | None = None
+    for thread in threads:
+        activity = thread.get("ended_at") or thread.get("started_at")
+        if isinstance(activity, datetime) and (latest is None or activity > latest):
+            latest = activity
+    return latest
+
+
+def build_gui_view_model(
+    threads: list[dict[str, Any]],
+    summary: dict[str, Any],
+    report_tz: Any = None,
+    previous_total_tokens: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    total_tokens = usage_total(summary["usage"])
+    token_delta = None if previous_total_tokens is None else total_tokens - previous_total_tokens
+    latest_activity = latest_thread_activity(threads)
+    is_active = bool(latest_activity and now - latest_activity <= timedelta(minutes=15))
+    top_project = summary["projects"][0]["project"] if summary["projects"] else "(none)"
+    top_model = summary["models"][0]["model"] if summary["models"] else "(none)"
+
+    daily_rows = [
+        (
+            row["date"],
+            number(usage_total(row["usage"])),
+            number(row["usage"]["input_tokens"]),
+            number(row["usage"]["cached_input_tokens"]),
+            number(row["usage"]["output_tokens"]),
+            percent(cache_hit_rate(row["usage"])),
+            number(row["estimated_codex_credits"]),
+            f"${number(row['estimated_api_usd_equiv'])}",
+            minutes(row["active_seconds"]),
+        )
+        for row in sorted(summary["daily"], key=lambda item: item["date"], reverse=True)
+    ]
+
+    project_rows = [
+        (
+            row["project"],
+            row["cwd"],
+            number(row["thread_count"]),
+            number(usage_total(row["usage"])),
+            percent(cache_hit_rate(row["usage"])),
+            number(row["estimated_codex_credits"]),
+            f"${number(row['estimated_api_usd_equiv'])}",
+            minutes(row["active_seconds"]),
+        )
+        for row in summary["projects"]
+    ]
+
+    model_rows = [
+        (
+            row["model"],
+            number(row["thread_count"]),
+            number(usage_total(row["usage"])),
+            number(row["usage"]["cached_input_tokens"]),
+            percent(output_ratio(row["usage"])),
+            number(row["estimated_codex_credits"]),
+            f"${number(row['estimated_api_usd_equiv'])}",
+        )
+        for row in summary["models"]
+    ]
+
+    thread_rows = [
+        (
+            thread.get("title") or "(untitled)",
+            thread.get("project") or "",
+            thread.get("model") or "",
+            fmt_dt(thread.get("ended_at"), report_tz),
+            number(usage_total(thread["usage"])),
+            percent(cache_hit_rate(thread["usage"])),
+            number(thread.get("estimated_codex_credits") or 0.0),
+            f"${number(thread.get('estimated_api_usd_equiv') or 0.0)}",
+            minutes(thread.get("active_seconds") or 0),
+        )
+        for thread in sorted(
+            threads,
+            key=lambda item: item.get("ended_at") or item.get("started_at") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+    ]
+
+    return {
+        "generated_at": fmt_dt(summary["generated_at"], report_tz),
+        "latest_activity": fmt_dt(latest_activity, report_tz) if latest_activity else "(none)",
+        "activity_status": "Active" if is_active else "Inactive",
+        "token_delta": "" if token_delta is None else f"{token_delta:+,}",
+        "total_tokens": total_tokens,
+        "pricing": summary.get("pricing") or pricing_metadata(),
+        "metrics": [
+            ("Threads", number(summary["thread_count"])),
+            ("Total tokens", number(total_tokens)),
+            ("Estimated Codex credits", number(summary["estimated_codex_credits"])),
+            ("API-equivalent USD", f"${number(summary['estimated_api_usd_equiv'])}"),
+            ("Estimated active time", f"{minutes(summary['active_seconds'])} min"),
+            ("Top project", top_project),
+            ("Top model", top_model),
+            ("Cache hit rate", percent(cache_hit_rate(summary["usage"]))),
+            ("Output share", percent(output_ratio(summary["usage"]))),
+        ],
+        "charts": {
+            "daily": [
+                {"label": row["date"], "value": usage_total(row["usage"]), "detail": f"{minutes(row['active_seconds'])} min"}
+                for row in summary["daily"][-6:]
+            ],
+            "projects": [
+                {"label": row["project"], "value": usage_total(row["usage"]), "detail": f"{row['thread_count']} threads"}
+                for row in summary["projects"][:6]
+            ],
+            "models": [
+                {"label": row["model"], "value": usage_total(row["usage"]), "detail": f"{row['thread_count']} threads"}
+                for row in summary["models"][:6]
+            ],
+        },
+        "tables": {
+            "daily": {
+                "columns": (
+                    ("date", "Date"),
+                    ("total", "Total"),
+                    ("input", "Input"),
+                    ("cached", "Cached input"),
+                    ("output", "Output"),
+                    ("cache_hit", "Cache hit"),
+                    ("credits", "Credits"),
+                    ("api_usd", "API USD"),
+                    ("active", "Active min"),
+                ),
+                "rows": daily_rows,
+            },
+            "projects": {
+                "columns": (
+                    ("project", "Project"),
+                    ("folder", "Folder"),
+                    ("threads", "Threads"),
+                    ("tokens", "Tokens"),
+                    ("cache_hit", "Cache hit"),
+                    ("credits", "Credits"),
+                    ("api_usd", "API USD"),
+                    ("active", "Active min"),
+                ),
+                "rows": project_rows,
+            },
+            "models": {
+                "columns": (
+                    ("model", "Model"),
+                    ("threads", "Threads"),
+                    ("tokens", "Tokens"),
+                    ("cached", "Cached input"),
+                    ("output_share", "Output share"),
+                    ("credits", "Credits"),
+                    ("api_usd", "API USD"),
+                ),
+                "rows": model_rows,
+            },
+            "threads": {
+                "columns": (
+                    ("title", "Thread"),
+                    ("project", "Project"),
+                    ("model", "Model"),
+                    ("last_activity", "Last activity"),
+                    ("tokens", "Tokens"),
+                    ("cache_hit", "Cache hit"),
+                    ("credits", "Credits"),
+                    ("api_usd", "API USD"),
+                    ("active", "Active min"),
+                ),
+                "rows": thread_rows,
+            },
+        },
+    }
+
+
 def emit_rows(rows: list[dict[str, Any]], columns: list[tuple[str, str]], args: argparse.Namespace) -> int:
     output_format = getattr(args, "format", "table")
     limit = getattr(args, "limit", None)
@@ -907,6 +1117,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
     total_tokens = usage_total(summary["usage"])
     top_project = summary["projects"][0]["project"] if summary["projects"] else "(none)"
     top_model = summary["models"][0]["model"] if summary["models"] else "(none)"
+    pricing = summary.get("pricing") or pricing_metadata()
     repo_url = "https://github.com/SuvenSeo/codex-usage-tracker"
     html_doc = f"""<!doctype html>
 <html lang="en">
@@ -1098,7 +1309,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       </div>
     </section>
     <div class="note">
-      Credit estimates use OpenAI's Codex token-based rate card. API USD is an API-pricing equivalent, not your authoritative Codex invoice.
+      Credit estimates use OpenAI's Codex token-based rate card, verified {html.escape(str(pricing.get("source_date") or ""))}. API USD uses {html.escape(str(pricing.get("api_pricing_basis") or "public API pricing"))}, not your authoritative Codex invoice.
       Exact billing should be checked in Codex Settings &gt; Usage or OpenAI billing.
     </div>
   </main>
@@ -1435,6 +1646,7 @@ def print_report_summary(summary: dict[str, Any], paths: dict[str, Path]) -> Non
     print(f"estimated_codex_credits={summary['estimated_codex_credits']:.2f}")
     print(f"estimated_api_usd_equiv={summary['estimated_api_usd_equiv']:.2f}")
     print(f"active_minutes_est={summary['active_seconds'] / 60.0:.1f}")
+    print(f"pricing_source_date={summary.get('pricing', {}).get('source_date', PRICING_SOURCE_DATE)}")
     for name, path in paths.items():
         print(f"{name}={path}")
 
@@ -1650,6 +1862,312 @@ def command_run(args: argparse.Namespace) -> int:
     return report_code
 
 
+class CodexUsageTrackerGui:
+    def __init__(self, args: argparse.Namespace, tk: Any, ttk: Any, messagebox: Any) -> None:
+        self.args = args
+        self.tk = tk
+        self.ttk = ttk
+        self.messagebox = messagebox
+        self.refresh_seconds = validate_refresh_seconds(int(args.refresh_seconds))
+        self.events: queue.Queue[tuple[Any, ...]] = queue.Queue()
+        self.worker_running = False
+        self.report_running = False
+        self.closed = False
+        self.previous_total_tokens: int | None = None
+        self.table_data: dict[str, list[tuple[str, ...]]] = {}
+        self.table_widgets: dict[str, Any] = {}
+        self.chart_canvases: dict[str, Any] = {}
+        self.metric_vars: dict[str, Any] = {}
+
+        self.root = tk.Tk()
+        self.root.title("Codex Usage Tracker")
+        self.root.geometry("1180x780")
+        self.root.minsize(980, 640)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+
+        self.status_var = tk.StringVar(value="Loading local Codex usage...")
+        self.header_var = tk.StringVar(value="Last refresh: pending | Latest activity: pending | Status: pending | Token delta: pending")
+        self.pricing_var = tk.StringVar(value="Pricing: pending")
+        self.search_var = tk.StringVar(value="")
+        self.auto_refresh_var = tk.BooleanVar(value=True)
+
+        self.build_ui()
+        self.search_var.trace_add("write", lambda *_: self.apply_filter())
+        self.root.after(100, self.poll_events)
+        self.root.after(200, self.start_refresh)
+        self.root.after(self.refresh_seconds * 1000, self.auto_refresh_tick)
+
+    def build_ui(self) -> None:
+        ttk = self.ttk
+        tk = self.tk
+
+        try:
+            style = ttk.Style()
+            if "vista" in style.theme_names():
+                style.theme_use("vista")
+        except Exception:
+            pass
+
+        container = ttk.Frame(self.root, padding=16)
+        container.pack(fill="both", expand=True)
+
+        header = ttk.Frame(container)
+        header.pack(fill="x")
+        ttk.Label(header, text="Codex Usage Tracker", font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        ttk.Label(header, textvariable=self.header_var, foreground="#475467").pack(anchor="w", pady=(4, 0))
+        ttk.Label(header, textvariable=self.pricing_var, foreground="#667085").pack(anchor="w", pady=(4, 0))
+        ttk.Label(header, textvariable=self.status_var, foreground="#344054").pack(anchor="w", pady=(4, 0))
+
+        controls = ttk.Frame(container)
+        controls.pack(fill="x", pady=(14, 10))
+        ttk.Button(controls, text="Refresh now", command=self.start_refresh).pack(side="left")
+        ttk.Checkbutton(controls, text="Auto-refresh", variable=self.auto_refresh_var).pack(side="left", padx=(12, 18))
+        ttk.Label(controls, text="Search").pack(side="left")
+        ttk.Entry(controls, textvariable=self.search_var, width=36).pack(side="left", padx=(6, 18))
+        ttk.Button(controls, text="Generate HTML report", command=self.start_report).pack(side="left")
+
+        metrics = ttk.Frame(container)
+        metrics.pack(fill="x", pady=(0, 12))
+        metric_names = [
+            "Threads",
+            "Total tokens",
+            "Estimated Codex credits",
+            "API-equivalent USD",
+            "Estimated active time",
+            "Top project",
+            "Top model",
+            "Cache hit rate",
+            "Output share",
+        ]
+        for index, name in enumerate(metric_names):
+            card = ttk.LabelFrame(metrics, text=name, padding=(10, 8))
+            card.grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=4)
+            metrics.columnconfigure(index % 3, weight=1)
+            value = tk.StringVar(value="--")
+            self.metric_vars[name] = value
+            ttk.Label(card, textvariable=value, font=("Segoe UI", 12, "bold"), wraplength=320).pack(anchor="w")
+
+        notebook = ttk.Notebook(container)
+        notebook.pack(fill="both", expand=True)
+
+        overview = ttk.Frame(notebook, padding=10)
+        notebook.add(overview, text="Overview")
+        self.add_chart(overview, "daily", "Daily Tokens", "#1f6feb")
+        self.add_chart(overview, "projects", "Top Projects", "#1a7f64")
+        self.add_chart(overview, "models", "Top Models", "#b7791f")
+
+        table_specs = {
+            "daily": "Daily",
+            "projects": "Projects",
+            "models": "Models",
+            "threads": "Threads",
+        }
+        for key, title in table_specs.items():
+            frame = ttk.Frame(notebook, padding=8)
+            notebook.add(frame, text=title)
+            self.table_widgets[key] = self.make_table(frame)
+
+    def add_chart(self, parent: Any, key: str, title: str, color: str) -> None:
+        frame = self.ttk.LabelFrame(parent, text=title, padding=8)
+        frame.pack(fill="both", expand=True, pady=(0, 8))
+        canvas = self.tk.Canvas(frame, height=155, bg="#ffffff", highlightthickness=1, highlightbackground="#d7dce2")
+        canvas.pack(fill="both", expand=True)
+        canvas.chart_color = color
+        self.chart_canvases[key] = canvas
+
+    def make_table(self, parent: Any) -> Any:
+        frame = self.ttk.Frame(parent)
+        frame.pack(fill="both", expand=True)
+        tree = self.ttk.Treeview(frame, show="headings", height=18)
+        yscroll = self.ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        xscroll = self.ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        return tree
+
+    def configure_table(self, key: str, columns: tuple[tuple[str, str], ...]) -> None:
+        tree = self.table_widgets[key]
+        column_ids = [column_id for column_id, _ in columns]
+        tree.configure(columns=column_ids)
+        for column_id, label in columns:
+            tree.heading(column_id, text=label)
+            width = 230 if column_id in {"title", "folder"} else 120
+            anchor = "w" if column_id in {"title", "project", "folder", "model", "last_activity"} else "e"
+            tree.column(column_id, width=width, minwidth=80, anchor=anchor, stretch=True)
+
+    def start_refresh(self) -> None:
+        if self.worker_running:
+            self.status_var.set("Refresh already running...")
+            return
+        self.worker_running = True
+        self.status_var.set("Refreshing from local Codex logs...")
+        thread = threading.Thread(target=self.refresh_worker, daemon=True)
+        thread.start()
+
+    def refresh_worker(self) -> None:
+        try:
+            threads, summary, report_tz = load_report_data(self.args)
+            model = build_gui_view_model(
+                threads,
+                summary,
+                report_tz=report_tz,
+                previous_total_tokens=self.previous_total_tokens,
+            )
+            self.events.put(("refresh_ok", model))
+        except Exception as exc:
+            self.events.put(("refresh_error", str(exc)))
+
+    def start_report(self) -> None:
+        if self.report_running:
+            self.status_var.set("HTML report generation already running...")
+            return
+        self.report_running = True
+        self.status_var.set("Generating HTML, CSV, and JSON reports...")
+        thread = threading.Thread(target=self.report_worker, daemon=True)
+        thread.start()
+
+    def report_worker(self) -> None:
+        try:
+            output_dir = Path(self.args.output_dir).expanduser()
+            threads, summary, report_tz = load_report_data(self.args)
+            paths = write_reports(threads, summary, output_dir, report_tz=report_tz)
+            self.events.put(("report_ok", paths["dashboard_html"]))
+        except Exception as exc:
+            self.events.put(("report_error", str(exc)))
+
+    def poll_events(self) -> None:
+        while True:
+            try:
+                event = self.events.get_nowait()
+            except queue.Empty:
+                break
+
+            kind = event[0]
+            if kind == "refresh_ok":
+                self.worker_running = False
+                self.update_view(event[1])
+            elif kind == "refresh_error":
+                self.worker_running = False
+                self.status_var.set(f"Refresh failed; keeping last data visible: {event[1]}")
+            elif kind == "report_ok":
+                self.report_running = False
+                path = event[1]
+                self.status_var.set(f"HTML report generated: {path}")
+                self.messagebox.showinfo("Report generated", f"Dashboard written to:\n{path}")
+            elif kind == "report_error":
+                self.report_running = False
+                self.status_var.set(f"Report generation failed: {event[1]}")
+
+        if not self.closed:
+            self.root.after(100, self.poll_events)
+
+    def auto_refresh_tick(self) -> None:
+        if self.auto_refresh_var.get():
+            self.start_refresh()
+        if not self.closed:
+            self.root.after(self.refresh_seconds * 1000, self.auto_refresh_tick)
+
+    def update_view(self, model: dict[str, Any]) -> None:
+        self.previous_total_tokens = int(model["total_tokens"])
+        self.header_var.set(
+            "Last refresh: "
+            + model["generated_at"]
+            + " | Latest activity: "
+            + model["latest_activity"]
+            + " | Status: "
+            + model["activity_status"]
+            + " | Token delta: "
+            + (model["token_delta"] or "initial")
+        )
+        pricing = model.get("pricing") or pricing_metadata()
+        self.pricing_var.set(
+            "Pricing: Codex token-rate card verified "
+            + str(pricing.get("source_date") or PRICING_SOURCE_DATE)
+            + "; billing balance still lives in Codex/OpenAI billing."
+        )
+        for label, value in model["metrics"]:
+            if label in self.metric_vars:
+                self.metric_vars[label].set(value)
+
+        for key, table in model["tables"].items():
+            self.configure_table(key, table["columns"])
+            self.table_data[key] = list(table["rows"])
+
+        self.draw_chart(self.chart_canvases["daily"], model["charts"]["daily"])
+        self.draw_chart(self.chart_canvases["projects"], model["charts"]["projects"])
+        self.draw_chart(self.chart_canvases["models"], model["charts"]["models"])
+        self.apply_filter()
+        self.status_var.set("Live dashboard refreshed from local Codex data.")
+
+    def draw_chart(self, canvas: Any, rows: list[dict[str, Any]]) -> None:
+        canvas.delete("all")
+        width = max(int(canvas.winfo_width() or 0), 520)
+        height = max(int(canvas.winfo_height() or 0), 140)
+        if not rows:
+            canvas.create_text(width / 2, height / 2, text="No data in this range.", fill="#667085")
+            return
+
+        max_value = max([int(row["value"]) for row in rows] or [1])
+        row_height = max(22, min(34, int((height - 18) / max(len(rows), 1))))
+        label_width = 155
+        value_width = 110
+        bar_width = max(80, width - label_width - value_width - 34)
+        color = getattr(canvas, "chart_color", "#1f6feb")
+
+        for index, row in enumerate(rows):
+            y = 12 + index * row_height
+            label = str(row["label"])
+            if len(label) > 24:
+                label = label[:21] + "..."
+            value = int(row["value"])
+            filled = max(2, int((value / max_value) * bar_width))
+            canvas.create_text(12, y + 8, text=label, anchor="w", fill="#344054")
+            canvas.create_rectangle(label_width, y + 2, label_width + bar_width, y + 14, fill="#eef1f4", outline="")
+            canvas.create_rectangle(label_width, y + 2, label_width + filled, y + 14, fill=color, outline="")
+            detail = str(row.get("detail") or "")
+            value_text = number(value) + (f" | {detail}" if detail else "")
+            canvas.create_text(label_width + bar_width + 12, y + 8, text=value_text, anchor="w", fill="#151a22")
+
+    def apply_filter(self) -> None:
+        query = self.search_var.get().strip().lower()
+        for key, tree in self.table_widgets.items():
+            for item in tree.get_children():
+                tree.delete(item)
+            for row in self.table_data.get(key, []):
+                haystack = " ".join(str(value) for value in row).lower()
+                if not query or query in haystack:
+                    tree.insert("", "end", values=row)
+
+    def close(self) -> None:
+        self.closed = True
+        self.root.destroy()
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+
+def command_gui(args: argparse.Namespace) -> int:
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+    except Exception as exc:
+        print(f"error: Tkinter is not available: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        app = CodexUsageTrackerGui(args, tk, ttk, messagebox)
+    except Exception as exc:
+        print(f"error: could not start GUI: {exc}", file=sys.stderr)
+        return 1
+
+    app.run()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Track Codex app token usage, estimated cost, and WakaTime activity.")
     parser.add_argument("--codex-home", default=str(DEFAULT_CODEX_HOME), help="Codex data folder. Default: ~/.codex")
@@ -1674,6 +2192,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     demo = subparsers.add_parser("demo", help="Generate reports from bundled synthetic data.")
     demo.set_defaults(func=command_demo)
+
+    gui = subparsers.add_parser("gui", help="Open a live native desktop dashboard.")
+    gui.add_argument("--refresh-seconds", type=parse_refresh_seconds, default=10, help="Auto-refresh interval. Minimum: 2 seconds.")
+    gui.set_defaults(func=command_gui)
 
     doctor = subparsers.add_parser("doctor", help="Check Codex logs, parser readiness, WakaTime, and output paths.")
     doctor.set_defaults(func=command_doctor)

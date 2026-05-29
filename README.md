@@ -76,6 +76,30 @@ Open:
 out/dashboard.html
 ```
 
+Open the live native desktop dashboard:
+
+```bash
+codex-usage-tracker --days 7 --timezone Asia/Colombo gui
+```
+
+The GUI uses Python's built-in Tkinter toolkit, polls local Codex logs every 10
+seconds by default, and includes a button to generate the normal `out/`
+HTML/CSV/JSON reports. Change the interval with:
+
+```bash
+codex-usage-tracker gui --refresh-seconds 5
+```
+
+Build a double-clickable Windows EXE:
+
+```powershell
+python -m pip install -e ".[build]"
+.\scripts\build_windows_exe.ps1
+```
+
+The generated app is written to `dist\CodexUsageTracker.exe`. Double-clicking it
+opens the live GUI. It still reads only local Codex data from `~/.codex`.
+
 Try a safe public demo:
 
 ```bash
@@ -153,11 +177,12 @@ The tracker reports exact local token counts where Codex logs provide them.
 
 Cost estimates are not an invoice:
 
-- `estimated_codex_credits` uses OpenAI's Codex token-based rate card.
-- `estimated_api_usd_equiv` uses public OpenAI API prices as an equivalent estimate.
-- Real Codex billing/credit balance should be checked in Codex Settings > Usage or OpenAI billing.
+- `estimated_codex_credits` uses OpenAI's current Codex token-based rate card.
+- `estimated_api_usd_equiv` uses public OpenAI API standard short-context prices as an equivalent estimate.
+- The included rates were verified against official OpenAI docs on 2026-05-29.
+- Real Codex billing/credit balance, fast-mode uplifts, taxes, and any legacy workspace exceptions should be checked in Codex Settings > Usage or OpenAI billing.
 
-Pricing can change. Review and update `MODEL_RATES` in `codex_app_tracker.py` when OpenAI updates rates.
+Pricing can change. The current source pages are OpenAI's [Codex rate card](https://help.openai.com/en/articles/20001106-codex-rate-card) and [API pricing](https://developers.openai.com/api/docs/pricing). Review and update `MODEL_RATES` in `codex_app_tracker.py` when OpenAI updates rates.
 
 ## Privacy
 

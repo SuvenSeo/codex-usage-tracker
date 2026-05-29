@@ -39,6 +39,11 @@ classifiers = [
 Homepage = "https://github.com/SuvenSeo/codex-usage-tracker"
 Issues = "https://github.com/SuvenSeo/codex-usage-tracker/issues"
 
+[project.optional-dependencies]
+build = [
+  "pyinstaller>=6.0",
+]
+
 [project.scripts]
 codex-usage-tracker = "codex_app_tracker:main"
 

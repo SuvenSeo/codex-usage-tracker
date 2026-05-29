@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -115,6 +117,57 @@ class CodexUsageTrackerTests(unittest.TestCase):
         summary = tracker.aggregate_threads(threads)
         self.assertGreaterEqual(len(threads), 3)
         self.assertGreater(summary["usage"]["total_tokens"], 0)
+
+    def test_gui_subcommand_accepts_refresh_seconds(self):
+        parser = tracker.build_parser()
+        args = parser.parse_args(["--days", "7", "--timezone", "Asia/Colombo", "gui", "--refresh-seconds", "5"])
+
+        self.assertEqual(args.command, "gui")
+        self.assertEqual(args.refresh_seconds, 5)
+        self.assertIs(args.func, tracker.command_gui)
+
+    def test_gui_refresh_seconds_rejects_low_values(self):
+        with self.assertRaises(ValueError):
+            tracker.validate_refresh_seconds(1)
+
+        parser = tracker.build_parser()
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["gui", "--refresh-seconds", "1"])
+
+    def test_gui_view_model_formats_demo_summary(self):
+        threads = tracker.demo_threads()
+        summary = tracker.aggregate_threads(threads)
+        model = tracker.build_gui_view_model(threads, summary)
+
+        metrics = dict(model["metrics"])
+        self.assertIn("Total tokens", metrics)
+        self.assertEqual(metrics["Threads"], "3")
+        self.assertTrue(model["tables"]["daily"]["rows"])
+        self.assertTrue(model["tables"]["projects"]["rows"])
+        self.assertTrue(model["tables"]["models"]["rows"])
+        self.assertTrue(model["tables"]["threads"]["rows"])
+        self.assertEqual(model["token_delta"], "")
+        self.assertEqual(model["pricing"]["source_date"], tracker.PRICING_SOURCE_DATE)
+
+    def test_gui_view_model_uses_shared_privacy_path(self):
+        threads = tracker.apply_privacy(tracker.demo_threads(), redact=True, hash_projects=True)
+        summary = tracker.aggregate_threads(threads)
+        model = tracker.build_gui_view_model(threads, summary)
+
+        thread_rows = model["tables"]["threads"]["rows"]
+        project_rows = model["tables"]["projects"]["rows"]
+        self.assertTrue(thread_rows)
+        self.assertTrue(project_rows)
+        self.assertTrue(all(row[0] == "(redacted)" for row in thread_rows))
+        self.assertTrue(all(str(row[0]).startswith("project-") for row in project_rows))
+        self.assertTrue(all(row[1] == "" for row in project_rows))
+
+    def test_summary_includes_pricing_metadata(self):
+        summary = tracker.aggregate_threads(tracker.demo_threads())
+
+        self.assertEqual(summary["pricing"]["source_date"], "2026-05-29")
+        self.assertIn("codex-rate-card", summary["pricing"]["codex_rate_card_url"])
 
 
 if __name__ == "__main__":
