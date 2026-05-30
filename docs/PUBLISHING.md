@@ -8,6 +8,10 @@ Current state:
 - The release includes `CodexUsageTracker.exe` and a SHA256 checksum asset.
 - PyPI is not published yet; use the GitHub tag install path until the PyPI
   project and trusted publisher are configured.
+- The GitHub release workflow has already been test-run with `publish_pypi=true`.
+  The build job passed, and the publish job reached PyPI, but PyPI rejected it
+  with `invalid-publisher` because no pending trusted publisher exists on the
+  PyPI account yet.
 
 ## Local Checks
 
@@ -29,6 +33,38 @@ python -m build
 6. Tag the same commit, for example `v0.1.1`.
 
 The release workflow uses PyPI trusted publishing, so no PyPI token should be stored in the repo.
+
+## Pending Trusted Publisher Values
+
+For a new PyPI project, create a pending publisher from:
+
+```text
+https://pypi.org/manage/account/publishing/
+```
+
+Use these exact values:
+
+```text
+PyPI project name: codex-usage-tracker
+Owner: SuvenSeo
+Repository name: codex-usage-tracker
+Workflow filename: release.yml
+Environment name: pypi
+```
+
+These match the claims emitted by the GitHub workflow:
+
+```text
+sub: repo:SuvenSeo/codex-usage-tracker:environment:pypi
+repository: SuvenSeo/codex-usage-tracker
+workflow_ref: SuvenSeo/codex-usage-tracker/.github/workflows/release.yml@refs/heads/main
+environment: pypi
+```
+
+After the pending publisher is saved on PyPI, rerun the GitHub `Release`
+workflow on `main` with `publish_pypi=true`. PyPI should create the project on
+first successful publish and convert the pending publisher into a normal
+trusted publisher.
 
 ## Clean Install Check
 
