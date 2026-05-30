@@ -7,17 +7,20 @@ OpenAI pricing/usage docs, WakaTime plugin docs, and the current project state.
 
 The strongest near-term position is:
 
-> The simplest local-first Codex usage dashboard with WakaTime AI-coding sync.
+> The simplest local-first AI coding usage dashboard with Codex depth and honest Claude Code/Cursor visibility.
 
 Do not compete head-on with large multi-agent tools first. Own the Codex-specific
-workflow, then expand after the product feels polished.
+workflow, while showing adjacent tools only where local data is reliable.
 
 ## Current Alpha
 
 Already implemented in the repo:
 
 - Static local HTML/CSV/JSON reports.
-- Terminal reports for daily, weekly, monthly, session, project, and model views.
+- Terminal reports for daily, weekly, monthly, session, project, model, and source views.
+- Opt-in multi-source reports with `--sources all`.
+- Claude Code JSONL parsing from `~/.claude/projects`.
+- Cursor AI tracking DB parsing from `~/.cursor/ai-tracking/ai-code-tracking.db`.
 - `doctor` and `demo` first-run commands.
 - `--redact` and `--hash-projects` privacy controls.
 - Optional WakaTime `ai coding` heartbeat sync.
@@ -120,14 +123,15 @@ Goal: lower friction for stars and adoption.
 - Add Homebrew tap later if adoption justifies it.
 - Add a short screen recording GIF to the README.
 
-### 8. Multi-Agent Expansion Later
+### 8. Multi-Agent Expansion
 
-Goal: expand only when the Codex experience is strong.
+Goal: expand without pretending every app exposes the same data.
 
 - Add parser interface: `AgentParser`.
 - Keep Codex as the best-supported parser.
-- Add optional Claude Code, Cursor, OpenCode, Gemini CLI support only if the
-  dashboard can show cross-agent comparisons clearly.
+- Improve Claude Code model/cost metadata when official pricing support is added.
+- Keep Cursor as activity/edit tracking unless local token totals become available.
+- Add OpenCode and Gemini CLI support only when local storage formats are clear.
 
 ## 7-Day Execution Plan
 
@@ -155,7 +159,7 @@ Goal: expand only when the Codex experience is strong.
 
 - Publish to PyPI.
 - Add install docs for `pipx`, `uv tool`, and `pip`.
-- Tag `v0.1.0`.
+- Tag the current release.
 
 ### Day 6
 

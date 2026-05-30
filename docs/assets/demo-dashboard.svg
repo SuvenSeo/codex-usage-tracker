@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820" role="img" aria-labelledby="title desc">
-  <title id="title">Codex Usage Tracker demo dashboard</title>
-  <desc id="desc">A sample local analytics dashboard with token totals, estimated credits, cache hit rate, searchable tables, and a developer credit footer.</desc>
+  <title id="title">AI coding usage tracker demo dashboard</title>
+  <desc id="desc">A sample local analytics dashboard with app totals, token totals, estimated credits, cache hit rate, searchable tables, and a developer credit footer.</desc>
   <rect width="1280" height="820" fill="#f5f6f8"/>
   <g transform="translate(72 38)" font-family="Segoe UI, Arial, sans-serif">
     <g font-size="12" fill="#344054">
@@ -10,11 +10,13 @@
       <text x="110" y="18">Private reports</text>
       <rect x="214" y="0" width="112" height="28" rx="14" fill="#fff" stroke="#d7dce2"/>
       <text x="228" y="18">WakaTime ready</text>
-      <rect x="340" y="0" width="112" height="28" rx="14" fill="#fff" stroke="#d7dce2"/>
-      <text x="354" y="18">Codex app logs</text>
+      <rect x="340" y="0" width="118" height="28" rx="14" fill="#fff" stroke="#d7dce2"/>
+      <text x="354" y="18">Codex logs</text>
+      <rect x="472" y="0" width="128" height="28" rx="14" fill="#fff" stroke="#d7dce2"/>
+      <text x="486" y="18">Claude/Cursor</text>
     </g>
-    <text x="0" y="76" font-size="34" font-weight="700" fill="#151a22">Codex App Usage Dashboard</text>
-    <text x="0" y="112" font-size="16" fill="#667085">Generated from local Codex app logs. Estimates help with project-level usage, not official billing.</text>
+    <text x="0" y="76" font-size="34" font-weight="700" fill="#151a22">AI Coding Usage Dashboard</text>
+    <text x="0" y="112" font-size="16" fill="#667085">Generated from selected local AI coding data. Estimates help with project-level usage, not official billing.</text>
 
     <g transform="translate(0 148)">
       <g>
@@ -132,6 +134,6 @@
       </g>
     </g>
 
-    <text x="0" y="806" font-size="13" fill="#667085">Built by SuvenSeo for developers who want local visibility into Codex usage.</text>
+    <text x="0" y="806" font-size="13" fill="#667085">Built by SuvenSeo for developers who want local visibility into AI coding usage.</text>
   </g>
 </svg>

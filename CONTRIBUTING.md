@@ -3,8 +3,8 @@
 Contributions are welcome.
 
 Codex Usage Tracker is local-first developer tooling. The main contribution
-rule is: do not require users to upload prompts, responses, raw Codex logs, or
-private local paths to use or debug the project.
+rule is: do not require users to upload prompts, responses, raw Codex/Claude
+Code logs, Cursor databases, or private local paths to use or debug the project.
 
 ## Good First Issues
 
@@ -52,8 +52,8 @@ python -m build
 
 - Do not commit generated `out/` reports or `.tracker_state.json`; they can
   contain private local paths and thread names.
-- Do not paste private prompts, responses, API keys, raw rollout logs, or raw
-  `~/.codex` contents into issues.
+- Do not paste private prompts, responses, API keys, raw rollout logs, Claude
+  Code transcripts, Cursor databases, or raw `~/.codex` contents into issues.
 - Use `codex-usage-tracker --redact --hash-projects doctor` when sharing debug
   output.
 - New integrations should clearly document what data leaves the machine.

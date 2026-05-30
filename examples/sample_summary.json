@@ -11,7 +11,27 @@
     },
     "estimated_codex_credits": 37.7,
     "estimated_api_usd_equiv": 1.51,
-    "active_seconds": 4200
+    "active_seconds": 4200,
+    "event_count": 73,
+    "request_count": 2,
+    "sources": [
+      {
+        "app": "Codex",
+        "thread_count": 2,
+        "event_count": 73,
+        "request_count": 2,
+        "active_seconds": 4200,
+        "usage": {
+          "input_tokens": 1270000,
+          "cached_input_tokens": 1000000,
+          "output_tokens": 18500,
+          "reasoning_output_tokens": 4700,
+          "total_tokens": 1288500
+        },
+        "estimated_codex_credits": 37.7,
+        "estimated_api_usd_equiv": 1.51
+      }
+    ]
   }
 }
 

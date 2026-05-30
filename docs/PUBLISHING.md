@@ -4,7 +4,7 @@ This project is ready for a normal PyPI trusted publishing setup.
 
 Current state:
 
-- `v0.1.0` is published as a GitHub Release.
+- `v0.1.1` is published as a GitHub Release.
 - The release includes `CodexUsageTracker.exe` and a SHA256 checksum asset.
 - PyPI trusted publishing is configured and working.
 - `codex-usage-tracker` is published on PyPI:

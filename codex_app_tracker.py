@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Local Codex app usage tracker.
+Local AI coding usage tracker.
 
-Reads Codex desktop/app rollout logs from ~/.codex, estimates token cost/credits,
-generates CSV/JSON/HTML reports, and can send conservative WakaTime "ai coding"
-heartbeats for recent Codex app activity.
+Reads Codex desktop/app rollout logs, Claude Code transcripts, and Cursor AI
+tracking metadata, generates CSV/JSON/HTML reports, and can send conservative
+WakaTime "ai coding" heartbeats for recent Codex app activity.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -34,9 +34,11 @@ except Exception:  # pragma: no cover - Python without zoneinfo support.
     ZoneInfo = None  # type: ignore[assignment]
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 TRACKER_DIR = Path(__file__).resolve().parent
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
+DEFAULT_CLAUDE_HOME = Path.home() / ".claude"
+DEFAULT_CURSOR_AI_DB = Path.home() / ".cursor" / "ai-tracking" / "ai-code-tracking.db"
 DEFAULT_OUTPUT_DIR = Path.cwd() / "out"
 DEFAULT_STATE_FILE = Path.home() / ".codex-usage-tracker" / "state.json"
 PRICING_SOURCE_DATE = "2026-05-29"
@@ -51,6 +53,15 @@ USAGE_FIELDS = (
     "reasoning_output_tokens",
     "total_tokens",
 )
+
+SUPPORTED_SOURCES = ("codex", "claude", "cursor")
+SOURCE_LABELS = {
+    "codex": "Codex",
+    "claude": "Claude Code",
+    "cursor": "Cursor",
+    "demo": "Demo",
+    "(unknown)": "(unknown)",
+}
 
 # Rates verified against official OpenAI pages on 2026-05-29.
 # Codex credit estimates use the token-based Codex rate card. API USD is an
@@ -129,18 +140,39 @@ def zero_usage() -> dict[str, int]:
     return {field: 0 for field in USAGE_FIELDS}
 
 
+def nonnegative_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    return 0
+
+
 def normalize_usage(value: Any) -> dict[str, int]:
     usage = zero_usage()
     if not isinstance(value, dict):
         return usage
     for field in USAGE_FIELDS:
-        raw = value.get(field, 0)
-        if isinstance(raw, bool):
-            raw = 0
-        if isinstance(raw, (int, float)):
-            usage[field] = max(0, int(raw))
+        usage[field] = nonnegative_int(value.get(field, 0))
     if usage["total_tokens"] == 0:
         usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+    return usage
+
+
+def normalize_claude_usage(value: Any) -> dict[str, int]:
+    usage = zero_usage()
+    if not isinstance(value, dict):
+        return usage
+
+    base_input = nonnegative_int(value.get("input_tokens", 0))
+    cache_creation = nonnegative_int(value.get("cache_creation_input_tokens", 0))
+    cache_read = nonnegative_int(value.get("cache_read_input_tokens", 0))
+    output = nonnegative_int(value.get("output_tokens", 0))
+
+    usage["input_tokens"] = base_input + cache_creation + cache_read
+    usage["cached_input_tokens"] = cache_read
+    usage["output_tokens"] = output
+    usage["total_tokens"] = usage["input_tokens"] + output
     return usage
 
 
@@ -160,6 +192,61 @@ def diff_usage(current: dict[str, int], previous: dict[str, int]) -> dict[str, i
 
 def usage_total(usage: dict[str, int]) -> int:
     return int(usage.get("total_tokens", 0))
+
+
+def parse_epoch_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    seconds = float(value)
+    if seconds > 10_000_000_000:
+        seconds /= 1000.0
+    try:
+        return datetime.fromtimestamp(seconds, timezone.utc)
+    except Exception:
+        return None
+
+
+def parse_source_filter(value: str | None) -> set[str]:
+    raw = (value or "codex").strip().lower()
+    if raw in {"", "codex"}:
+        return {"codex"}
+    parts = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if "all" in parts:
+        return set(SUPPORTED_SOURCES)
+    unknown = sorted(parts - set(SUPPORTED_SOURCES))
+    if unknown:
+        known = ", ".join((*SUPPORTED_SOURCES, "all"))
+        raise ValueError(f"unknown source(s): {', '.join(unknown)}. Use one of: {known}")
+    return parts or {"codex"}
+
+
+def normalize_app(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("_", "-")
+    if not text:
+        return "(unknown)"
+    if text in SOURCE_LABELS:
+        return text
+    if text.startswith("codex") or "openai" in text:
+        return "codex"
+    if text.startswith("claude") or "anthropic" in text:
+        return "claude"
+    if text.startswith("cursor"):
+        return "cursor"
+    if text.startswith("demo"):
+        return "demo"
+    return text
+
+
+def thread_app(thread: dict[str, Any]) -> str:
+    app = normalize_app(thread.get("app"))
+    if app != "(unknown)":
+        return app
+    return normalize_app(thread.get("source"))
+
+
+def app_label(app: Any) -> str:
+    key = normalize_app(app)
+    return SOURCE_LABELS.get(key, str(app or key))
 
 
 def normalize_model(model: str | None) -> str:
@@ -201,7 +288,7 @@ def pricing_metadata() -> dict[str, Any]:
         "codex_rate_card_url": CODEX_RATE_CARD_URL,
         "api_pricing_url": API_PRICING_URL,
         "api_pricing_basis": API_PRICING_BASIS,
-        "caveat": "Codex credits are estimated from local token logs and official token rates. Official billing, remaining credits, fast mode uplifts, taxes, and legacy plan exceptions must be checked in Codex/OpenAI billing.",
+        "caveat": "Codex credits are estimated from local Codex token logs and official OpenAI token rates. Claude Code token totals and Cursor activity come from local app data, but official billing, remaining credits, fast mode uplifts, taxes, and plan exceptions must be checked with the vendor.",
     }
 
 
@@ -374,12 +461,15 @@ def parse_rollout(path: Path, db_meta: dict[str, dict[str, Any]], report_tz: Any
         "title": title,
         "cwd": cwd,
         "project": project_name_from_cwd(cwd),
+        "app": "codex",
         "source": source,
         "model": model,
         "reasoning_effort": reasoning_effort,
         "cli_version": cli_version,
         "path": str(path),
         "line_count": line_count,
+        "event_count": line_count,
+        "request_count": len(usage_events),
         "started_at": started_at,
         "ended_at": ended_at,
         "usage": latest_usage,
@@ -423,6 +513,243 @@ def load_threads(codex_home: Path, days: int | None = None, report_tz: Any = Non
             parsed[key] = thread
 
     return sorted(parsed.values(), key=lambda item: item.get("ended_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+
+def iter_claude_files(claude_home: Path) -> list[Path]:
+    projects = claude_home / "projects"
+    if not projects.exists():
+        return []
+    return sorted(set(projects.rglob("*.jsonl")), key=lambda p: str(p).lower())
+
+
+def parse_claude_jsonl(path: Path, report_tz: Any = None) -> dict[str, Any]:
+    session_id = path.stem
+    cwd = ""
+    title = ""
+    cli_version = ""
+    timestamps: list[datetime] = []
+    daily_usage: dict[str, dict[str, int]] = defaultdict(zero_usage)
+    total_usage = zero_usage()
+    tool_counts: dict[str, int] = defaultdict(int)
+    model_counts: Counter[str] = Counter()
+    line_count = 0
+    request_count = 0
+
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            line_count += 1
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            ts = parse_ts(obj.get("timestamp"))
+            if ts:
+                timestamps.append(ts)
+
+            if isinstance(obj.get("sessionId"), str):
+                session_id = obj["sessionId"] or session_id
+            if isinstance(obj.get("cwd"), str):
+                cwd = clean_windows_path(obj.get("cwd") or cwd)
+            if isinstance(obj.get("version"), str):
+                cli_version = obj.get("version") or cli_version
+            if isinstance(obj.get("aiTitle"), str) and obj.get("aiTitle"):
+                title = obj.get("aiTitle") or title
+
+            message = obj.get("message")
+            if not isinstance(message, dict):
+                continue
+
+            model = message.get("model")
+            if isinstance(model, str) and model:
+                model_counts[model] += 1
+
+            usage = normalize_claude_usage(message.get("usage"))
+            if usage_total(usage) > 0:
+                add_usage(total_usage, usage)
+                request_count += 1
+                if ts:
+                    add_usage(daily_usage[local_day(ts, report_tz)], usage)
+
+            content = message.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        tool_name = str(item.get("name") or "tool_use")
+                        tool_counts[tool_name] += 1
+
+    active_seconds, active_daily = estimate_active_seconds(timestamps, report_tz=report_tz)
+    started_at = min(timestamps) if timestamps else None
+    ended_at = max(timestamps) if timestamps else None
+    model = model_counts.most_common(1)[0][0] if model_counts else ""
+    if not title:
+        title = f"Claude Code session {session_id[:8]}"
+
+    return {
+        "thread_id": session_id,
+        "title": title,
+        "cwd": cwd,
+        "project": project_name_from_cwd(cwd),
+        "app": "claude",
+        "source": "claude_code",
+        "model": model,
+        "reasoning_effort": "",
+        "cli_version": cli_version,
+        "path": str(path),
+        "line_count": line_count,
+        "event_count": line_count,
+        "request_count": request_count,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "usage": total_usage,
+        "daily_usage": dict(daily_usage),
+        "event_timestamps": timestamps,
+        "active_seconds": active_seconds,
+        "active_daily": active_daily,
+        "tool_counts": dict(tool_counts),
+        "estimated_codex_credits": 0.0,
+        "estimated_api_usd_equiv": 0.0,
+    }
+
+
+def load_claude_threads(claude_home: Path, days: int | None = None, report_tz: Any = None) -> list[dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    threads: list[dict[str, Any]] = []
+    for path in iter_claude_files(claude_home):
+        try:
+            thread = parse_claude_jsonl(path, report_tz=report_tz)
+        except Exception as exc:
+            print(f"warning: could not parse {path}: {exc}", file=sys.stderr)
+            continue
+        ended_at = thread.get("ended_at")
+        if cutoff and isinstance(ended_at, datetime) and ended_at < cutoff:
+            continue
+        threads.append(thread)
+    return sorted(threads, key=lambda item: item.get("ended_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+
+def load_cursor_threads(cursor_db: Path, days: int | None = None, report_tz: Any = None) -> list[dict[str, Any]]:
+    if not cursor_db.exists():
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    groups: dict[str, dict[str, Any]] = {}
+    summaries: dict[str, str] = {}
+
+    try:
+        con = sqlite3.connect(f"file:{cursor_db}?mode=ro", uri=True, timeout=3)
+        tables = {
+            row[0]
+            for row in con.execute("select name from sqlite_master where type='table'").fetchall()
+        }
+        if "conversation_summaries" in tables:
+            for conversation_id, title in con.execute("select conversationId, title from conversation_summaries"):
+                if conversation_id and title:
+                    summaries[str(conversation_id)] = str(title)
+        if "ai_code_hashes" not in tables:
+            con.close()
+            return []
+
+        rows = con.execute(
+            """
+            select conversationId, requestId, timestamp, source, fileExtension, model
+            from ai_code_hashes
+            order by timestamp
+            """
+        )
+        for conversation_id, request_id, timestamp, source, file_extension, model in rows:
+            conversation_id = str(conversation_id or request_id or f"cursor-{timestamp}")
+            group = groups.setdefault(conversation_id, {
+                "thread_id": f"cursor-{conversation_id}",
+                "conversation_id": conversation_id,
+                "timestamps": [],
+                "requests": set(),
+                "model_counts": Counter(),
+                "source_counts": Counter(),
+                "extension_counts": Counter(),
+                "line_count": 0,
+            })
+            ts = parse_epoch_timestamp(timestamp)
+            if ts:
+                group["timestamps"].append(ts)
+            if request_id:
+                group["requests"].add(str(request_id))
+            if source:
+                group["source_counts"][str(source)] += 1
+            if file_extension:
+                group["extension_counts"][str(file_extension)] += 1
+            if model:
+                group["model_counts"][str(model)] += 1
+            group["line_count"] += 1
+        con.close()
+    except Exception as exc:
+        print(f"warning: could not read {cursor_db}: {exc}", file=sys.stderr)
+        return []
+
+    threads: list[dict[str, Any]] = []
+    for group in groups.values():
+        timestamps = list(group["timestamps"])
+        if not timestamps:
+            continue
+        started_at = min(timestamps)
+        ended_at = max(timestamps)
+        if cutoff and ended_at < cutoff:
+            continue
+        model_counts: Counter[str] = group["model_counts"]
+        source_counts: Counter[str] = group["source_counts"]
+        active_seconds, active_daily = estimate_active_seconds(timestamps, report_tz=report_tz)
+        conversation_id = group["conversation_id"]
+        model = model_counts.most_common(1)[0][0] if model_counts else ""
+        source = source_counts.most_common(1)[0][0] if source_counts else "cursor"
+        request_count = len(group["requests"]) or group["line_count"]
+        threads.append({
+            "thread_id": group["thread_id"],
+            "title": summaries.get(conversation_id) or f"Cursor AI edits {conversation_id[:8]}",
+            "cwd": "",
+            "project": "Cursor AI edits",
+            "app": "cursor",
+            "source": f"cursor_{source}",
+            "model": model,
+            "reasoning_effort": "",
+            "cli_version": "",
+            "path": str(cursor_db),
+            "line_count": group["line_count"],
+            "event_count": group["line_count"],
+            "request_count": request_count,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "usage": zero_usage(),
+            "daily_usage": {},
+            "event_timestamps": timestamps,
+            "active_seconds": active_seconds,
+            "active_daily": active_daily,
+            "tool_counts": {
+                "ai_code_events": group["line_count"],
+                "requests": request_count,
+            },
+            "estimated_codex_credits": 0.0,
+            "estimated_api_usd_equiv": 0.0,
+        })
+
+    return sorted(threads, key=lambda item: item.get("ended_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+
+def load_selected_threads(args: argparse.Namespace, report_tz: Any = None) -> list[dict[str, Any]]:
+    sources = parse_source_filter(getattr(args, "sources", None))
+    threads: list[dict[str, Any]] = []
+    if "codex" in sources:
+        threads.extend(load_threads(Path(args.codex_home).expanduser(), days=args.days, report_tz=report_tz))
+    if "claude" in sources:
+        threads.extend(load_claude_threads(Path(args.claude_home).expanduser(), days=args.days, report_tz=report_tz))
+    if "cursor" in sources:
+        threads.extend(load_cursor_threads(Path(args.cursor_db).expanduser(), days=args.days, report_tz=report_tz))
+    return sorted(
+        threads,
+        key=lambda item: item.get("ended_at") or item.get("started_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
 
 
 def resolve_timezone(name: str | None) -> Any:
@@ -540,6 +867,8 @@ def aggregate_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
     total_credits = 0.0
     total_usd = 0.0
     total_active_seconds = 0
+    total_event_count = 0
+    total_request_count = 0
     daily: dict[str, dict[str, Any]] = defaultdict(lambda: {
         "date": "",
         "usage": zero_usage(),
@@ -549,52 +878,90 @@ def aggregate_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
         "threads": set(),
     })
     projects: dict[str, dict[str, Any]] = defaultdict(lambda: {
+        "app": "",
         "project": "",
         "cwd": "",
         "usage": zero_usage(),
         "estimated_codex_credits": 0.0,
         "estimated_api_usd_equiv": 0.0,
         "active_seconds": 0,
+        "event_count": 0,
+        "request_count": 0,
         "thread_count": 0,
     })
     models: dict[str, dict[str, Any]] = defaultdict(lambda: {
+        "app": "",
         "model": "",
         "usage": zero_usage(),
         "estimated_codex_credits": 0.0,
         "estimated_api_usd_equiv": 0.0,
         "active_seconds": 0,
+        "event_count": 0,
+        "request_count": 0,
+        "thread_count": 0,
+    })
+    sources: dict[str, dict[str, Any]] = defaultdict(lambda: {
+        "app": "",
+        "usage": zero_usage(),
+        "estimated_codex_credits": 0.0,
+        "estimated_api_usd_equiv": 0.0,
+        "active_seconds": 0,
+        "event_count": 0,
+        "request_count": 0,
         "thread_count": 0,
     })
 
     for thread in threads:
         usage = thread["usage"]
+        app = thread_app(thread)
+        app_name = app_label(app)
         model = thread.get("model") or "(unknown)"
         project = thread.get("project") or "(unknown)"
         cwd = thread.get("cwd") or ""
         credits = thread.get("estimated_codex_credits") or 0.0
         usd = thread.get("estimated_api_usd_equiv") or 0.0
         active_seconds = int(thread.get("active_seconds") or 0)
+        event_count = int(thread.get("event_count") or thread.get("line_count") or 0)
+        request_count = int(thread.get("request_count") or 0)
 
         add_usage(total_usage, usage)
         total_credits += credits
         total_usd += usd
         total_active_seconds += active_seconds
+        total_event_count += event_count
+        total_request_count += request_count
 
-        project_row = projects[cwd or project]
+        source_row = sources[app]
+        source_row["app"] = app_name
+        add_usage(source_row["usage"], usage)
+        source_row["estimated_codex_credits"] += credits
+        source_row["estimated_api_usd_equiv"] += usd
+        source_row["active_seconds"] += active_seconds
+        source_row["event_count"] += event_count
+        source_row["request_count"] += request_count
+        source_row["thread_count"] += 1
+
+        project_row = projects[f"{app}\0{cwd or project}"]
+        project_row["app"] = app_name
         project_row["project"] = project
         project_row["cwd"] = cwd
         add_usage(project_row["usage"], usage)
         project_row["estimated_codex_credits"] += credits
         project_row["estimated_api_usd_equiv"] += usd
         project_row["active_seconds"] += active_seconds
+        project_row["event_count"] += event_count
+        project_row["request_count"] += request_count
         project_row["thread_count"] += 1
 
-        model_row = models[model]
+        model_row = models[f"{app}\0{model}"]
+        model_row["app"] = app_name
         model_row["model"] = model
         add_usage(model_row["usage"], usage)
         model_row["estimated_codex_credits"] += credits
         model_row["estimated_api_usd_equiv"] += usd
         model_row["active_seconds"] += active_seconds
+        model_row["event_count"] += event_count
+        model_row["request_count"] += request_count
         model_row["thread_count"] += 1
 
         for day, day_usage in thread.get("daily_usage", {}).items():
@@ -608,6 +975,7 @@ def aggregate_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
         for day, seconds in thread.get("active_daily", {}).items():
             daily[day]["date"] = day
             daily[day]["active_seconds"] += int(seconds)
+            daily[day]["threads"].add(thread["thread_id"])
 
     daily_rows = []
     for row in daily.values():
@@ -622,10 +990,25 @@ def aggregate_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
         "estimated_codex_credits": total_credits,
         "estimated_api_usd_equiv": total_usd,
         "active_seconds": total_active_seconds,
+        "event_count": total_event_count,
+        "request_count": total_request_count,
         "pricing": pricing_metadata(),
         "daily": sorted(daily_rows, key=lambda item: item["date"]),
-        "projects": sorted(projects.values(), key=lambda item: usage_total(item["usage"]), reverse=True),
-        "models": sorted(models.values(), key=lambda item: usage_total(item["usage"]), reverse=True),
+        "sources": sorted(
+            sources.values(),
+            key=lambda item: (usage_total(item["usage"]), item["event_count"], item["active_seconds"]),
+            reverse=True,
+        ),
+        "projects": sorted(
+            projects.values(),
+            key=lambda item: (usage_total(item["usage"]), item["event_count"], item["active_seconds"]),
+            reverse=True,
+        ),
+        "models": sorted(
+            models.values(),
+            key=lambda item: (usage_total(item["usage"]), item["event_count"], item["active_seconds"]),
+            reverse=True,
+        ),
     }
 
 
@@ -689,6 +1072,8 @@ def flatten_thread_for_csv(thread: dict[str, Any], report_tz: Any = None) -> dic
     usage = thread["usage"]
     return {
         "thread_id": thread["thread_id"],
+        "app": app_label(thread_app(thread)),
+        "source": thread.get("source", ""),
         "title": thread.get("title", ""),
         "project": thread.get("project", ""),
         "cwd": thread.get("cwd", ""),
@@ -704,6 +1089,8 @@ def flatten_thread_for_csv(thread: dict[str, Any], report_tz: Any = None) -> dic
         "total_tokens": usage["total_tokens"],
         "estimated_codex_credits": round(thread.get("estimated_codex_credits") or 0.0, 4),
         "estimated_api_usd_equiv": round(thread.get("estimated_api_usd_equiv") or 0.0, 4),
+        "event_count": thread.get("event_count", thread.get("line_count", "")),
+        "request_count": thread.get("request_count", ""),
         "path": thread.get("path", ""),
     }
 
@@ -712,6 +1099,7 @@ def flatten_thread_for_cli(thread: dict[str, Any], report_tz: Any = None) -> dic
     usage = thread["usage"]
     return {
         "thread_id": str(thread.get("thread_id") or "")[:12],
+        "app": app_label(thread_app(thread)),
         "title": thread.get("title") or "(untitled)",
         "project": thread.get("project", ""),
         "model": thread.get("model", ""),
@@ -732,6 +1120,8 @@ def flatten_group_for_csv(row: dict[str, Any], group_fields: dict[str, Any]) -> 
     result = dict(group_fields)
     result.update({
         "thread_count": row.get("thread_count", ""),
+        "event_count": row.get("event_count", ""),
+        "request_count": row.get("request_count", ""),
         "active_minutes_est": round(float(row.get("active_seconds") or 0) / 60.0, 2),
         "input_tokens": usage["input_tokens"],
         "cached_input_tokens": usage["cached_input_tokens"],
@@ -749,6 +1139,8 @@ def flatten_summary_row_for_cli(row: dict[str, Any], group_fields: dict[str, Any
     result = dict(group_fields)
     result.update({
         "threads": row.get("thread_count", ""),
+        "events": row.get("event_count", ""),
+        "requests": row.get("request_count", ""),
         "active_min": round(float(row.get("active_seconds") or 0) / 60.0, 1),
         "tokens": usage_total(usage),
         "input": usage["input_tokens"],
@@ -841,6 +1233,7 @@ def build_gui_view_model(
     latest_activity = latest_thread_activity(threads)
     is_active = bool(latest_activity and now - latest_activity <= timedelta(minutes=15))
     top_project = summary["projects"][0]["project"] if summary["projects"] else "(none)"
+    top_app = summary["sources"][0]["app"] if summary.get("sources") else "(none)"
     top_model = summary["models"][0]["model"] if summary["models"] else "(none)"
 
     daily_rows = [
@@ -860,9 +1253,12 @@ def build_gui_view_model(
 
     project_rows = [
         (
+            row["app"],
             row["project"],
             row["cwd"],
             number(row["thread_count"]),
+            number(row.get("request_count", 0)),
+            number(row.get("event_count", 0)),
             number(usage_total(row["usage"])),
             percent(cache_hit_rate(row["usage"])),
             number(row["estimated_codex_credits"]),
@@ -874,8 +1270,10 @@ def build_gui_view_model(
 
     model_rows = [
         (
+            row["app"],
             row["model"],
             number(row["thread_count"]),
+            number(row.get("request_count", 0)),
             number(usage_total(row["usage"])),
             number(row["usage"]["cached_input_tokens"]),
             percent(output_ratio(row["usage"])),
@@ -887,10 +1285,13 @@ def build_gui_view_model(
 
     thread_rows = [
         (
+            app_label(thread_app(thread)),
             thread.get("title") or "(untitled)",
             thread.get("project") or "",
             thread.get("model") or "",
             fmt_dt(thread.get("ended_at"), report_tz),
+            number(thread.get("request_count", 0)),
+            number(thread.get("event_count", thread.get("line_count", 0))),
             number(usage_total(thread["usage"])),
             percent(cache_hit_rate(thread["usage"])),
             number(thread.get("estimated_codex_credits") or 0.0),
@@ -904,6 +1305,23 @@ def build_gui_view_model(
         )
     ]
 
+    source_rows = [
+        (
+            row["app"],
+            number(row["thread_count"]),
+            number(row.get("request_count", 0)),
+            number(row.get("event_count", 0)),
+            number(usage_total(row["usage"])),
+            number(row["usage"]["input_tokens"]),
+            number(row["usage"]["cached_input_tokens"]),
+            number(row["usage"]["output_tokens"]),
+            number(row["estimated_codex_credits"]),
+            f"${number(row['estimated_api_usd_equiv'])}",
+            minutes(row["active_seconds"]),
+        )
+        for row in summary.get("sources", [])
+    ]
+
     return {
         "generated_at": fmt_dt(summary["generated_at"], report_tz),
         "latest_activity": fmt_dt(latest_activity, report_tz) if latest_activity else "(none)",
@@ -913,16 +1331,24 @@ def build_gui_view_model(
         "pricing": summary.get("pricing") or pricing_metadata(),
         "metrics": [
             ("Threads", number(summary["thread_count"])),
+            ("Apps", number(len(summary.get("sources", [])))),
             ("Total tokens", number(total_tokens)),
             ("Estimated Codex credits", number(summary["estimated_codex_credits"])),
             ("API-equivalent USD", f"${number(summary['estimated_api_usd_equiv'])}"),
             ("Estimated active time", f"{minutes(summary['active_seconds'])} min"),
+            ("Events", number(summary.get("event_count", 0))),
+            ("Requests", number(summary.get("request_count", 0))),
+            ("Top app", top_app),
             ("Top project", top_project),
             ("Top model", top_model),
             ("Cache hit rate", percent(cache_hit_rate(summary["usage"]))),
             ("Output share", percent(output_ratio(summary["usage"]))),
         ],
         "charts": {
+            "sources": [
+                {"label": row["app"], "value": usage_total(row["usage"]) or int(row.get("event_count") or 0), "detail": f"{row['thread_count']} threads"}
+                for row in summary.get("sources", [])[:6]
+            ],
             "daily": [
                 {"label": row["date"], "value": usage_total(row["usage"]), "detail": f"{minutes(row['active_seconds'])} min"}
                 for row in summary["daily"][-6:]
@@ -937,6 +1363,22 @@ def build_gui_view_model(
             ],
         },
         "tables": {
+            "sources": {
+                "columns": (
+                    ("app", "App"),
+                    ("threads", "Threads"),
+                    ("requests", "Requests"),
+                    ("events", "Events"),
+                    ("tokens", "Tokens"),
+                    ("input", "Input"),
+                    ("cached", "Cached input"),
+                    ("output", "Output"),
+                    ("credits", "Credits"),
+                    ("api_usd", "API USD"),
+                    ("active", "Active min"),
+                ),
+                "rows": source_rows,
+            },
             "daily": {
                 "columns": (
                     ("date", "Date"),
@@ -953,9 +1395,12 @@ def build_gui_view_model(
             },
             "projects": {
                 "columns": (
+                    ("app", "App"),
                     ("project", "Project"),
                     ("folder", "Folder"),
                     ("threads", "Threads"),
+                    ("requests", "Requests"),
+                    ("events", "Events"),
                     ("tokens", "Tokens"),
                     ("cache_hit", "Cache hit"),
                     ("credits", "Credits"),
@@ -966,8 +1411,10 @@ def build_gui_view_model(
             },
             "models": {
                 "columns": (
+                    ("app", "App"),
                     ("model", "Model"),
                     ("threads", "Threads"),
+                    ("requests", "Requests"),
                     ("tokens", "Tokens"),
                     ("cached", "Cached input"),
                     ("output_share", "Output share"),
@@ -978,10 +1425,13 @@ def build_gui_view_model(
             },
             "threads": {
                 "columns": (
+                    ("app", "App"),
                     ("title", "Thread"),
                     ("project", "Project"),
                     ("model", "Model"),
                     ("last_activity", "Last activity"),
+                    ("requests", "Requests"),
+                    ("events", "Events"),
                     ("tokens", "Tokens"),
                     ("cache_hit", "Cache hit"),
                     ("credits", "Credits"),
@@ -1043,6 +1493,7 @@ def emit_rows(rows: list[dict[str, Any]], columns: list[tuple[str, str]], args: 
 def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: dict[str, Any], report_tz: Any = None) -> None:
     recent_threads = sorted(threads, key=lambda item: usage_total(item["usage"]), reverse=True)[:25]
     daily_rows = summary["daily"][-45:]
+    source_rows = summary.get("sources", [])
     project_rows = summary["projects"][:20]
     model_rows = summary["models"]
 
@@ -1068,13 +1519,33 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
             minutes(row["active_seconds"]),
         ])
         for row in reversed(daily_rows)
-    ) or empty_row(10)
+    ) or empty_row(11)
+
+    source_html = "\n".join(
+        tr([
+            html.escape(row["app"]),
+            number(row["thread_count"]),
+            number(row.get("request_count", 0)),
+            number(row.get("event_count", 0)),
+            number(usage_total(row["usage"])),
+            number(row["usage"]["input_tokens"]),
+            number(row["usage"]["cached_input_tokens"]),
+            number(row["usage"]["output_tokens"]),
+            number(row["estimated_codex_credits"]),
+            f"${number(row['estimated_api_usd_equiv'])}",
+            minutes(row["active_seconds"]),
+        ])
+        for row in source_rows
+    ) or empty_row(12)
 
     project_html = "\n".join(
         tr([
+            html.escape(row["app"]),
             html.escape(row["project"]),
             html.escape(row["cwd"]),
             number(row["thread_count"]),
+            number(row.get("request_count", 0)),
+            number(row.get("event_count", 0)),
             number(usage_total(row["usage"])),
             percent(cache_hit_rate(row["usage"])),
             number(row["estimated_codex_credits"]),
@@ -1082,12 +1553,14 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
             minutes(row["active_seconds"]),
         ])
         for row in project_rows
-    ) or empty_row(8)
+    ) or empty_row(10)
 
     model_html = "\n".join(
         tr([
+            html.escape(row["app"]),
             html.escape(row["model"]),
             number(row["thread_count"]),
+            number(row.get("request_count", 0)),
             number(usage_total(row["usage"])),
             number(row["usage"]["cached_input_tokens"]),
             number(row["usage"]["output_tokens"]),
@@ -1096,14 +1569,17 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
             f"${number(row['estimated_api_usd_equiv'])}",
         ])
         for row in model_rows
-    ) or empty_row(8)
+    ) or empty_row(10)
 
     thread_html = "\n".join(
         tr([
+            html.escape(app_label(thread_app(thread))),
             html.escape(thread.get("title") or "(untitled)"),
             html.escape(thread.get("project") or ""),
             html.escape(thread.get("model") or ""),
             html.escape(fmt_dt(thread.get("ended_at"), report_tz)),
+            number(thread.get("request_count", 0)),
+            number(thread.get("event_count", thread.get("line_count", 0))),
             number(usage_total(thread["usage"])),
             percent(cache_hit_rate(thread["usage"])),
             number(thread.get("estimated_codex_credits") or 0.0),
@@ -1111,11 +1587,12 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
             minutes(thread.get("active_seconds") or 0),
         ])
         for thread in recent_threads
-    ) or empty_row(9)
+    ) or empty_row(11)
 
     generated_at = fmt_dt(summary["generated_at"], report_tz)
     total_tokens = usage_total(summary["usage"])
     top_project = summary["projects"][0]["project"] if summary["projects"] else "(none)"
+    top_app = source_rows[0]["app"] if source_rows else "(none)"
     top_model = summary["models"][0]["model"] if summary["models"] else "(none)"
     pricing = summary.get("pricing") or pricing_metadata()
     repo_url = "https://github.com/SuvenSeo/codex-usage-tracker"
@@ -1124,7 +1601,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Codex App Usage Dashboard</title>
+  <title>AI Coding Usage Dashboard</title>
   <style>
     :root {{
       --bg: #f5f6f8;
@@ -1248,19 +1725,24 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
     <div class="eyebrow">
       <span class="pill">Local-first</span>
       <span class="pill">Private reports</span>
-      <span class="pill">WakaTime ready</span>
       <span class="pill">Codex app logs</span>
+      <span class="pill">Claude Code logs</span>
+      <span class="pill">Cursor activity</span>
     </div>
-    <h1>Codex App Usage Dashboard</h1>
-    <p>Generated {html.escape(generated_at)} from local Codex app logs. Estimates help with project-level usage, not official billing.</p>
+    <h1>AI Coding Usage Dashboard</h1>
+    <p>Generated {html.escape(generated_at)} from selected local AI coding data. Estimates help with project-level usage, not official billing.</p>
     <section class="metrics" aria-label="Summary metrics">
+      <div class="metric"><span>Apps</span><strong>{number(len(source_rows))}</strong></div>
       <div class="metric"><span>Threads</span><strong>{number(summary["thread_count"])}</strong></div>
       <div class="metric"><span>Total tokens</span><strong>{number(total_tokens)}</strong></div>
       <div class="metric"><span>Estimated Codex credits</span><strong>{number(summary["estimated_codex_credits"])}</strong></div>
       <div class="metric"><span>API-equivalent USD</span><strong>${number(summary["estimated_api_usd_equiv"])}</strong></div>
       <div class="metric"><span>Estimated active time</span><strong>{minutes(summary["active_seconds"])} min</strong></div>
+      <div class="metric"><span>Events</span><strong>{number(summary.get("event_count", 0))}</strong></div>
+      <div class="metric"><span>Requests</span><strong>{number(summary.get("request_count", 0))}</strong></div>
     </section>
     <section class="insights" aria-label="Usage insights">
+      <div class="insight"><span>Top app</span><strong>{html.escape(top_app)}</strong></div>
       <div class="insight"><span>Top project</span><strong>{html.escape(top_project)}</strong></div>
       <div class="insight"><span>Top model</span><strong>{html.escape(top_model)}</strong></div>
       <div class="insight"><span>Cache hit rate</span><strong>{percent(cache_hit_rate(summary["usage"]))}</strong></div>
@@ -1272,6 +1754,15 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <h2>Usage Tables</h2>
       <input class="search" id="table-search" type="search" placeholder="Filter tables by project, model, title, or date">
     </div>
+    <section>
+      <h2>Apps</h2>
+      <div class="panel">
+        <table data-filterable>
+          <thead><tr><th>App</th><th>Threads</th><th>Requests</th><th>Events</th><th>Tokens</th><th>Input</th><th>Cached input</th><th>Output</th><th>Credits</th><th>API USD</th><th>Active min</th></tr></thead>
+          <tbody>{source_html}</tbody>
+        </table>
+      </div>
+    </section>
     <section>
       <h2>Daily Usage</h2>
       <div class="panel">
@@ -1285,7 +1776,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <h2>Projects</h2>
       <div class="panel">
         <table data-filterable>
-          <thead><tr><th>Project</th><th>Folder</th><th>Threads</th><th>Tokens</th><th>Cache hit</th><th>Credits</th><th>API USD</th><th>Active min</th></tr></thead>
+          <thead><tr><th>App</th><th>Project</th><th>Folder</th><th>Threads</th><th>Requests</th><th>Events</th><th>Tokens</th><th>Cache hit</th><th>Credits</th><th>API USD</th><th>Active min</th></tr></thead>
           <tbody>{project_html}</tbody>
         </table>
       </div>
@@ -1294,7 +1785,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <h2>Models</h2>
       <div class="panel">
         <table data-filterable>
-          <thead><tr><th>Model</th><th>Threads</th><th>Tokens</th><th>Cached input</th><th>Output</th><th>Output share</th><th>Credits</th><th>API USD</th></tr></thead>
+          <thead><tr><th>App</th><th>Model</th><th>Threads</th><th>Requests</th><th>Tokens</th><th>Cached input</th><th>Output</th><th>Output share</th><th>Credits</th><th>API USD</th></tr></thead>
           <tbody>{model_html}</tbody>
         </table>
       </div>
@@ -1303,18 +1794,17 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <h2>Most Expensive Threads</h2>
       <div class="panel">
         <table data-filterable>
-          <thead><tr><th>Thread</th><th>Project</th><th>Model</th><th>Last activity</th><th>Tokens</th><th>Cache hit</th><th>Credits</th><th>API USD</th><th>Active min</th></tr></thead>
+          <thead><tr><th>App</th><th>Thread</th><th>Project</th><th>Model</th><th>Last activity</th><th>Requests</th><th>Events</th><th>Tokens</th><th>Cache hit</th><th>Credits</th><th>API USD</th><th>Active min</th></tr></thead>
           <tbody>{thread_html}</tbody>
         </table>
       </div>
     </section>
     <div class="note">
-      Credit estimates use OpenAI's Codex token-based rate card, verified {html.escape(str(pricing.get("source_date") or ""))}. API USD uses {html.escape(str(pricing.get("api_pricing_basis") or "public API pricing"))}, not your authoritative Codex invoice.
-      Exact billing should be checked in Codex Settings &gt; Usage or OpenAI billing.
+      Credit estimates use OpenAI's Codex token-based rate card for Codex records only, verified {html.escape(str(pricing.get("source_date") or ""))}. API USD uses {html.escape(str(pricing.get("api_pricing_basis") or "public API pricing"))} where a known OpenAI model rate exists. Claude Code token totals and Cursor activity are local estimates, not authoritative vendor billing.
     </div>
   </main>
   <footer>
-    Built by <a href="{repo_url}">SuvenSeo</a> for developers who want local visibility into Codex usage.
+    Built by <a href="{repo_url}">SuvenSeo</a> for developers who want local visibility into AI coding usage.
   </footer>
   <script>
     const search = document.getElementById("table-search");
@@ -1347,6 +1837,7 @@ def write_reports(
         "summary_json": output_dir / "codex_usage_summary.json",
         "threads_csv": output_dir / "threads.csv",
         "daily_csv": output_dir / "daily.csv",
+        "sources_csv": output_dir / "sources.csv",
         "projects_csv": output_dir / "projects.csv",
         "models_csv": output_dir / "models.csv",
         "dashboard_html": output_dir / "dashboard.html",
@@ -1356,10 +1847,11 @@ def write_reports(
 
     thread_rows = [flatten_thread_for_csv(thread, report_tz=report_tz) for thread in threads]
     write_csv(paths["threads_csv"], thread_rows, [
-        "thread_id", "title", "project", "cwd", "model", "reasoning_effort",
+        "thread_id", "app", "source", "title", "project", "cwd", "model", "reasoning_effort",
         "started_at", "ended_at", "active_minutes_est", "input_tokens",
         "cached_input_tokens", "output_tokens", "reasoning_output_tokens",
-        "total_tokens", "estimated_codex_credits", "estimated_api_usd_equiv", "path",
+        "total_tokens", "estimated_codex_credits", "estimated_api_usd_equiv",
+        "event_count", "request_count", "path",
     ])
 
     daily_rows = [
@@ -1372,22 +1864,35 @@ def write_reports(
         "total_tokens", "estimated_codex_credits", "estimated_api_usd_equiv",
     ])
 
+    source_rows = [
+        flatten_group_for_csv(row, {"app": row["app"]})
+        for row in summary.get("sources", [])
+    ]
+    write_csv(paths["sources_csv"], source_rows, [
+        "app", "thread_count", "event_count", "request_count", "active_minutes_est",
+        "input_tokens", "cached_input_tokens", "output_tokens",
+        "reasoning_output_tokens", "total_tokens", "estimated_codex_credits",
+        "estimated_api_usd_equiv",
+    ])
+
     project_rows = [
-        flatten_group_for_csv(row, {"project": row["project"], "cwd": row["cwd"]})
+        flatten_group_for_csv(row, {"app": row["app"], "project": row["project"], "cwd": row["cwd"]})
         for row in summary["projects"]
     ]
     write_csv(paths["projects_csv"], project_rows, [
-        "project", "cwd", "thread_count", "active_minutes_est", "input_tokens",
+        "app", "project", "cwd", "thread_count", "event_count", "request_count",
+        "active_minutes_est", "input_tokens",
         "cached_input_tokens", "output_tokens", "reasoning_output_tokens",
         "total_tokens", "estimated_codex_credits", "estimated_api_usd_equiv",
     ])
 
     model_rows = [
-        flatten_group_for_csv(row, {"model": row["model"]})
+        flatten_group_for_csv(row, {"app": row["app"], "model": row["model"]})
         for row in summary["models"]
     ]
     write_csv(paths["models_csv"], model_rows, [
-        "model", "thread_count", "active_minutes_est", "input_tokens",
+        "app", "model", "thread_count", "event_count", "request_count",
+        "active_minutes_est", "input_tokens",
         "cached_input_tokens", "output_tokens", "reasoning_output_tokens",
         "total_tokens", "estimated_codex_credits", "estimated_api_usd_equiv",
     ])
@@ -1529,8 +2034,7 @@ def sync_wakatime(
 
 def load_report_data(args: argparse.Namespace, private_for_sync: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any], Any]:
     report_tz = resolve_timezone(getattr(args, "timezone", None))
-    codex_home = Path(args.codex_home).expanduser()
-    threads = load_threads(codex_home, days=args.days, report_tz=report_tz)
+    threads = load_selected_threads(args, report_tz=report_tz)
     threads = filter_threads_by_date(
         threads,
         since=getattr(args, "since", None),
@@ -1556,6 +2060,10 @@ def demo_thread(
     minutes_active: int,
     usage: dict[str, int],
     report_tz: Any = None,
+    app: str = "codex",
+    source: str | None = None,
+    event_count: int = 24,
+    request_count: int = 1,
 ) -> dict[str, Any]:
     timestamps = [started_at + timedelta(minutes=offset) for offset in range(0, max(minutes_active, 1), 8)]
     if not timestamps:
@@ -1567,12 +2075,15 @@ def demo_thread(
         "title": title,
         "cwd": cwd,
         "project": project_name_from_cwd(cwd),
-        "source": "demo",
+        "app": app,
+        "source": source or f"demo_{app}",
         "model": model,
         "reasoning_effort": "medium",
         "cli_version": VERSION,
         "path": f"demo/{thread_id}.jsonl",
-        "line_count": 24,
+        "line_count": event_count,
+        "event_count": event_count,
+        "request_count": request_count,
         "started_at": started_at,
         "ended_at": timestamps[-1],
         "usage": usage,
@@ -1581,8 +2092,8 @@ def demo_thread(
         "active_seconds": active_seconds,
         "active_daily": active_daily,
         "tool_counts": {"shell_command": 3, "apply_patch": 2},
-        "estimated_codex_credits": estimate_amount(usage, model, "codex_credits"),
-        "estimated_api_usd_equiv": estimate_amount(usage, model, "api_usd_standard_short"),
+        "estimated_codex_credits": estimate_amount(usage, model, "codex_credits") if app == "codex" else 0.0,
+        "estimated_api_usd_equiv": estimate_amount(usage, model, "api_usd_standard_short") if app == "codex" else 0.0,
     }
 
 
@@ -1637,12 +2148,49 @@ def demo_threads(report_tz: Any = None) -> list[dict[str, Any]]:
             },
             report_tz=report_tz,
         ),
+        demo_thread(
+            "demo-claude-code",
+            "Refactor parser fixtures with Claude Code",
+            "C:\\Projects\\codex-usage-tracker",
+            "claude-sonnet-4-6",
+            base + timedelta(days=1, hours=1),
+            46,
+            {
+                "input_tokens": 180_000,
+                "cached_input_tokens": 120_000,
+                "output_tokens": 14_200,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 194_200,
+            },
+            report_tz=report_tz,
+            app="claude",
+            source="demo_claude_code",
+            event_count=96,
+            request_count=24,
+        ),
+        demo_thread(
+            "demo-cursor-ai-edits",
+            "Cursor AI edit activity",
+            "Cursor AI edits",
+            "composer-2.5",
+            base + timedelta(days=1, hours=3),
+            28,
+            zero_usage(),
+            report_tz=report_tz,
+            app="cursor",
+            source="demo_cursor_ai_tracking",
+            event_count=430,
+            request_count=12,
+        ),
     ]
 
 
 def print_report_summary(summary: dict[str, Any], paths: dict[str, Path]) -> None:
+    print(f"apps={len(summary.get('sources', []))}")
     print(f"threads={summary['thread_count']}")
     print(f"tokens={usage_total(summary['usage'])}")
+    print(f"events={summary.get('event_count', 0)}")
+    print(f"requests={summary.get('request_count', 0)}")
     print(f"estimated_codex_credits={summary['estimated_codex_credits']:.2f}")
     print(f"estimated_api_usd_equiv={summary['estimated_api_usd_equiv']:.2f}")
     print(f"active_minutes_est={summary['active_seconds'] / 60.0:.1f}")
@@ -1712,6 +2260,7 @@ def command_session(args: argparse.Namespace) -> int:
     rows.sort(key=lambda item: item["tokens"], reverse=True)
     return emit_rows(rows, [
         ("thread_id", "Thread"),
+        ("app", "App"),
         ("title", "Title"),
         ("project", "Project"),
         ("model", "Model"),
@@ -1727,12 +2276,15 @@ def command_session(args: argparse.Namespace) -> int:
 def command_project(args: argparse.Namespace) -> int:
     _, summary, _ = load_report_data(args)
     rows = [
-        flatten_summary_row_for_cli(row, {"project": row["project"]})
+        flatten_summary_row_for_cli(row, {"app": row["app"], "project": row["project"]})
         for row in summary["projects"]
     ]
     return emit_rows(rows, [
+        ("app", "App"),
         ("project", "Project"),
         ("threads", "Threads"),
+        ("requests", "Requests"),
+        ("events", "Events"),
         ("active_min", "Active min"),
         ("tokens", "Tokens"),
         ("input", "Input"),
@@ -1747,12 +2299,37 @@ def command_project(args: argparse.Namespace) -> int:
 def command_model(args: argparse.Namespace) -> int:
     _, summary, _ = load_report_data(args)
     rows = [
-        flatten_summary_row_for_cli(row, {"model": row["model"]})
+        flatten_summary_row_for_cli(row, {"app": row["app"], "model": row["model"]})
         for row in summary["models"]
     ]
     return emit_rows(rows, [
+        ("app", "App"),
         ("model", "Model"),
         ("threads", "Threads"),
+        ("requests", "Requests"),
+        ("events", "Events"),
+        ("active_min", "Active min"),
+        ("tokens", "Tokens"),
+        ("input", "Input"),
+        ("cached", "Cached"),
+        ("output", "Output"),
+        ("cache_hit", "Cache hit"),
+        ("credits", "Credits"),
+        ("api_usd", "API USD"),
+    ], args)
+
+
+def command_source(args: argparse.Namespace) -> int:
+    _, summary, _ = load_report_data(args)
+    rows = [
+        flatten_summary_row_for_cli(row, {"app": row["app"]})
+        for row in summary.get("sources", [])
+    ]
+    return emit_rows(rows, [
+        ("app", "App"),
+        ("threads", "Threads"),
+        ("requests", "Requests"),
+        ("events", "Events"),
         ("active_min", "Active min"),
         ("tokens", "Tokens"),
         ("input", "Input"),
@@ -1767,43 +2344,95 @@ def command_model(args: argparse.Namespace) -> int:
 def command_doctor(args: argparse.Namespace) -> int:
     report_tz = resolve_timezone(getattr(args, "timezone", None))
     codex_home = Path(args.codex_home).expanduser()
+    claude_home = Path(args.claude_home).expanduser()
+    cursor_db = Path(args.cursor_db).expanduser()
     output_dir = Path(args.output_dir).expanduser()
     redact = bool(getattr(args, "redact", False))
+    sources = parse_source_filter(getattr(args, "sources", None))
     failures = 0
 
     def line(status: str, label: str, detail: str = "") -> None:
         print(f"[{status}] {label}" + (f" - {detail}" if detail else ""))
 
     line("OK", "Python", sys.version.split()[0])
-    line("OK" if codex_home.exists() else "FAIL", "Codex home", "(redacted)" if redact else str(codex_home))
-    if not codex_home.exists():
-        failures += 1
+    line("OK", "Selected sources", ", ".join(app_label(source) for source in sorted(sources)))
 
-    rollout_files = iter_rollout_files(codex_home) if codex_home.exists() else []
-    if rollout_files:
-        line("OK", "Rollout logs", f"{len(rollout_files)} files")
-    else:
-        line("FAIL", "Rollout logs", "no rollout-*.jsonl files found")
-        failures += 1
+    codex_threads: list[dict[str, Any]] = []
+    if "codex" in sources:
+        line("OK" if codex_home.exists() else "FAIL", "Codex home", "(redacted)" if redact else str(codex_home))
+        if not codex_home.exists():
+            failures += 1
 
-    threads = load_threads(codex_home, days=args.days, report_tz=report_tz) if rollout_files else []
-    threads = filter_threads_by_date(
-        threads,
-        since=getattr(args, "since", None),
-        until=getattr(args, "until", None),
-        report_tz=report_tz,
-    )
-    if threads:
-        line("OK", "Parser", f"{len(threads)} threads parsed")
-    else:
-        line("FAIL", "Parser", "no threads parsed in the selected range")
-        failures += 1
+        rollout_files = iter_rollout_files(codex_home) if codex_home.exists() else []
+        if rollout_files:
+            line("OK", "Codex rollout logs", f"{len(rollout_files)} files")
+        else:
+            line("FAIL", "Codex rollout logs", "no rollout-*.jsonl files found")
+            failures += 1
+
+        codex_threads = load_threads(codex_home, days=args.days, report_tz=report_tz) if rollout_files else []
+        codex_threads = filter_threads_by_date(
+            codex_threads,
+            since=getattr(args, "since", None),
+            until=getattr(args, "until", None),
+            report_tz=report_tz,
+        )
+        if codex_threads:
+            line("OK", "Codex parser", f"{len(codex_threads)} threads parsed")
+        else:
+            line("FAIL", "Codex parser", "no threads parsed in the selected range")
+            failures += 1
+
+    claude_threads: list[dict[str, Any]] = []
+    if "claude" in sources:
+        line("OK" if claude_home.exists() else "FAIL", "Claude home", "(redacted)" if redact else str(claude_home))
+        if not claude_home.exists():
+            failures += 1
+        claude_files = iter_claude_files(claude_home) if claude_home.exists() else []
+        if claude_files:
+            line("OK", "Claude Code logs", f"{len(claude_files)} files")
+        else:
+            line("FAIL", "Claude Code logs", "no project JSONL files found")
+            failures += 1
+        claude_threads = load_claude_threads(claude_home, days=args.days, report_tz=report_tz) if claude_files else []
+        claude_threads = filter_threads_by_date(
+            claude_threads,
+            since=getattr(args, "since", None),
+            until=getattr(args, "until", None),
+            report_tz=report_tz,
+        )
+        if claude_threads:
+            line("OK", "Claude parser", f"{len(claude_threads)} sessions parsed")
+        else:
+            line("FAIL", "Claude parser", "no sessions parsed in the selected range")
+            failures += 1
+
+    cursor_threads: list[dict[str, Any]] = []
+    if "cursor" in sources:
+        line("OK" if cursor_db.exists() else "FAIL", "Cursor AI tracking DB", "(redacted)" if redact else str(cursor_db))
+        if not cursor_db.exists():
+            failures += 1
+        cursor_threads = load_cursor_threads(cursor_db, days=args.days, report_tz=report_tz) if cursor_db.exists() else []
+        cursor_threads = filter_threads_by_date(
+            cursor_threads,
+            since=getattr(args, "since", None),
+            until=getattr(args, "until", None),
+            report_tz=report_tz,
+        )
+        if cursor_threads:
+            line("OK", "Cursor parser", f"{len(cursor_threads)} conversations parsed")
+            line("WARN", "Cursor token totals", "local Cursor DB exposes AI edit activity, not exact token usage")
+        else:
+            line("FAIL", "Cursor parser", "no conversations parsed in the selected range")
+            failures += 1
+
+    threads = codex_threads + claude_threads + cursor_threads
 
     unknown_models = sorted({thread.get("model") for thread in threads if thread.get("model") and not rates_for_model(thread.get("model"))})
     if unknown_models:
-        line("WARN", "Pricing table", "unknown models: " + ", ".join(unknown_models[:5]))
+        line("WARN", "OpenAI pricing table", "unknown/non-OpenAI models: " + ", ".join(unknown_models[:5]))
     else:
-        line("OK", "Pricing table", f"{len(MODEL_RATES)} model families")
+        line("OK", "OpenAI pricing table", f"{len(MODEL_RATES)} model families")
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1880,12 +2509,12 @@ class CodexUsageTrackerGui:
         self.metric_vars: dict[str, Any] = {}
 
         self.root = tk.Tk()
-        self.root.title("Codex Usage Tracker")
+        self.root.title("AI Coding Usage Tracker")
         self.root.geometry("1180x780")
         self.root.minsize(980, 640)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
-        self.status_var = tk.StringVar(value="Loading local Codex usage...")
+        self.status_var = tk.StringVar(value="Loading selected local AI coding usage...")
         self.header_var = tk.StringVar(value="Last refresh: pending | Latest activity: pending | Status: pending | Token delta: pending")
         self.pricing_var = tk.StringVar(value="Pricing: pending")
         self.search_var = tk.StringVar(value="")
@@ -1913,7 +2542,7 @@ class CodexUsageTrackerGui:
 
         header = ttk.Frame(container)
         header.pack(fill="x")
-        ttk.Label(header, text="Codex Usage Tracker", font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        ttk.Label(header, text="AI Coding Usage Tracker", font=("Segoe UI", 18, "bold")).pack(anchor="w")
         ttk.Label(header, textvariable=self.header_var, foreground="#475467").pack(anchor="w", pady=(4, 0))
         ttk.Label(header, textvariable=self.pricing_var, foreground="#667085").pack(anchor="w", pady=(4, 0))
         ttk.Label(header, textvariable=self.status_var, foreground="#344054").pack(anchor="w", pady=(4, 0))
@@ -1930,10 +2559,14 @@ class CodexUsageTrackerGui:
         metrics.pack(fill="x", pady=(0, 12))
         metric_names = [
             "Threads",
+            "Apps",
             "Total tokens",
             "Estimated Codex credits",
             "API-equivalent USD",
             "Estimated active time",
+            "Events",
+            "Requests",
+            "Top app",
             "Top project",
             "Top model",
             "Cache hit rate",
@@ -1952,11 +2585,13 @@ class CodexUsageTrackerGui:
 
         overview = ttk.Frame(notebook, padding=10)
         notebook.add(overview, text="Overview")
+        self.add_chart(overview, "sources", "Apps", "#7c3aed")
         self.add_chart(overview, "daily", "Daily Tokens", "#1f6feb")
         self.add_chart(overview, "projects", "Top Projects", "#1a7f64")
         self.add_chart(overview, "models", "Top Models", "#b7791f")
 
         table_specs = {
+            "sources": "Apps",
             "daily": "Daily",
             "projects": "Projects",
             "models": "Models",
@@ -1996,7 +2631,7 @@ class CodexUsageTrackerGui:
         for column_id, label in columns:
             tree.heading(column_id, text=label)
             width = 230 if column_id in {"title", "folder"} else 120
-            anchor = "w" if column_id in {"title", "project", "folder", "model", "last_activity"} else "e"
+            anchor = "w" if column_id in {"app", "title", "project", "folder", "model", "last_activity"} else "e"
             tree.column(column_id, width=width, minwidth=80, anchor=anchor, stretch=True)
 
     def start_refresh(self) -> None:
@@ -2004,7 +2639,7 @@ class CodexUsageTrackerGui:
             self.status_var.set("Refresh already running...")
             return
         self.worker_running = True
-        self.status_var.set("Refreshing from local Codex logs...")
+        self.status_var.set("Refreshing from selected local AI coding data...")
         thread = threading.Thread(target=self.refresh_worker, daemon=True)
         thread.start()
 
@@ -2087,7 +2722,7 @@ class CodexUsageTrackerGui:
         self.pricing_var.set(
             "Pricing: Codex token-rate card verified "
             + str(pricing.get("source_date") or PRICING_SOURCE_DATE)
-            + "; billing balance still lives in Codex/OpenAI billing."
+            + "; non-Codex billing remains vendor-authoritative."
         )
         for label, value in model["metrics"]:
             if label in self.metric_vars:
@@ -2097,11 +2732,12 @@ class CodexUsageTrackerGui:
             self.configure_table(key, table["columns"])
             self.table_data[key] = list(table["rows"])
 
+        self.draw_chart(self.chart_canvases["sources"], model["charts"]["sources"])
         self.draw_chart(self.chart_canvases["daily"], model["charts"]["daily"])
         self.draw_chart(self.chart_canvases["projects"], model["charts"]["projects"])
         self.draw_chart(self.chart_canvases["models"], model["charts"]["models"])
         self.apply_filter()
-        self.status_var.set("Live dashboard refreshed from local Codex data.")
+        self.status_var.set("Live dashboard refreshed from selected local AI coding data.")
 
     def draw_chart(self, canvas: Any, rows: list[dict[str, Any]]) -> None:
         canvas.delete("all")
@@ -2169,8 +2805,11 @@ def command_gui(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Track Codex app token usage, estimated cost, and WakaTime activity.")
+    parser = argparse.ArgumentParser(description="Track local AI coding usage across Codex, Claude Code, and Cursor.")
+    parser.add_argument("--sources", default="codex", help="Comma-separated sources: codex, claude, cursor, or all. Default: codex")
     parser.add_argument("--codex-home", default=str(DEFAULT_CODEX_HOME), help="Codex data folder. Default: ~/.codex")
+    parser.add_argument("--claude-home", default=str(DEFAULT_CLAUDE_HOME), help="Claude Code data folder. Default: ~/.claude")
+    parser.add_argument("--cursor-db", default=str(DEFAULT_CURSOR_AI_DB), help="Cursor AI tracking SQLite DB. Default: ~/.cursor/ai-tracking/ai-code-tracking.db")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Report output directory.")
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE), help="State file used to dedupe WakaTime heartbeats.")
     parser.add_argument("--days", type=int, default=None, help="Only include threads active in the last N days.")
@@ -2223,6 +2862,10 @@ def build_parser() -> argparse.ArgumentParser:
     model = subparsers.add_parser("model", help="Print model usage totals.")
     add_table_args(model, default_limit=20)
     model.set_defaults(func=command_model)
+
+    source = subparsers.add_parser("source", help="Print app/source usage totals.")
+    add_table_args(source, default_limit=20)
+    source.set_defaults(func=command_source)
 
     sync = subparsers.add_parser("sync-wakatime", help="Send recent Codex app activity to WakaTime.")
     sync.add_argument("--wakatime-since-minutes", type=int, default=180)

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-usage-tracker"
-version = "0.1.1"
-description = "Local usage dashboard for Codex app tokens, estimated credits, and WakaTime AI coding time."
+version = "0.2.0"
+description = "Local usage dashboard for Codex, Claude Code, Cursor, and WakaTime AI coding time."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -16,6 +16,8 @@ authors = [
 keywords = [
   "codex",
   "openai",
+  "claude",
+  "cursor",
   "wakatime",
   "usage",
   "tokens",

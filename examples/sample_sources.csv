@@ -1,0 +1,2 @@
+app,thread_count,event_count,request_count,active_minutes_est,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,estimated_codex_credits,estimated_api_usd_equiv
+Codex,2,73,2,70.0,1270000,1000000,18500,4700,1288500,37.7,1.51
