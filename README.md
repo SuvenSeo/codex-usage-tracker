@@ -1,7 +1,9 @@
 # Codex Usage Tracker
 
 [![CI](https://github.com/SuvenSeo/codex-usage-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/SuvenSeo/codex-usage-tracker/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/SuvenSeo/codex-usage-tracker)](https://github.com/SuvenSeo/codex-usage-tracker/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
 Local-first usage analytics for the Codex app.
 
@@ -36,7 +38,21 @@ This tool gives you those answers locally, without uploading Codex transcripts t
 
 ## Install
 
-Clone the repo:
+Install the latest tagged source release with `pipx`:
+
+```bash
+pipx install git+https://github.com/SuvenSeo/codex-usage-tracker.git@v0.1.0
+codex-usage-tracker demo
+```
+
+Or install with `pip`:
+
+```bash
+python -m pip install "codex-usage-tracker @ git+https://github.com/SuvenSeo/codex-usage-tracker.git@v0.1.0"
+codex-usage-tracker demo
+```
+
+For local development, clone the repo:
 
 ```bash
 git clone https://github.com/SuvenSeo/codex-usage-tracker.git
@@ -55,6 +71,10 @@ Or install the CLI locally:
 pip install -e .
 codex-usage-tracker report
 ```
+
+Windows users can also download `CodexUsageTracker.exe` from the
+[latest release](https://github.com/SuvenSeo/codex-usage-tracker/releases/latest).
+The release includes a SHA256 checksum file.
 
 ## Quick Start
 
@@ -219,6 +239,11 @@ python -m pip install build
 python -m build
 ```
 
+New contributors can start with
+[good first issues](https://github.com/SuvenSeo/codex-usage-tracker/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+or the current [roadmap](docs/ROADMAP.md). See [CONTRIBUTING.md](CONTRIBUTING.md)
+for the privacy rules and PR checklist.
+
 ## Roadmap
 
 See [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -229,4 +254,8 @@ Built by [SuvenSeo](https://github.com/SuvenSeo) for developers who want local v
 
 ## Status
 
-Early alpha. Codex local log formats may change, so parser compatibility can break. Issues and PRs are welcome.
+Early alpha. Codex local log formats may change, so parser compatibility can
+break. The `v0.1.0` GitHub release is public with a Windows executable and
+checksum, and the Python package can be installed directly from the tagged
+GitHub source. PyPI publishing is planned through trusted publishing after the
+PyPI project is configured. Issues and PRs are welcome.
