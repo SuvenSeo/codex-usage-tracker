@@ -38,17 +38,17 @@ This tool gives you those answers locally, without uploading Codex transcripts t
 
 ## Install
 
-Install the latest tagged source release with `pipx`:
+Install from PyPI with `pipx`:
 
 ```bash
-pipx install git+https://github.com/SuvenSeo/codex-usage-tracker.git@v0.1.0
+pipx install codex-usage-tracker
 codex-usage-tracker demo
 ```
 
 Or install with `pip`:
 
 ```bash
-python -m pip install "codex-usage-tracker @ git+https://github.com/SuvenSeo/codex-usage-tracker.git@v0.1.0"
+python -m pip install codex-usage-tracker
 codex-usage-tracker demo
 ```
 
@@ -256,6 +256,7 @@ Built by [SuvenSeo](https://github.com/SuvenSeo) for developers who want local v
 
 Early alpha. Codex local log formats may change, so parser compatibility can
 break. The `v0.1.0` GitHub release is public with a Windows executable and
-checksum, and the Python package can be installed directly from the tagged
-GitHub source. PyPI publishing is planned through trusted publishing after the
-PyPI project is configured. Issues and PRs are welcome.
+checksum. The Python package is published on
+[PyPI](https://pypi.org/project/codex-usage-tracker/) and can be installed with
+`pipx install codex-usage-tracker` or `python -m pip install codex-usage-tracker`.
+Issues and PRs are welcome.

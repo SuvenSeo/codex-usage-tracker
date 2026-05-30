@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## v0.1.1 - 2026-05-30
+
+- Published the Python package to PyPI using GitHub Actions trusted publishing.
+- Updated installation docs to prefer `pipx install codex-usage-tracker`.
+- Documented the working trusted publisher configuration.
+
 ## v0.1.0 - 2026-05-29
 
 First public release.
