@@ -129,7 +129,7 @@ Goal: expand without pretending every app exposes the same data.
 
 - Add parser interface: `AgentParser`.
 - Keep Codex as the best-supported parser.
-- Improve Claude Code model/cost metadata when official pricing support is added.
+- Keep Claude Code pricing metadata current as Anthropic model/rate names change.
 - Keep Cursor as activity/edit tracking unless local token totals become available.
 - Add OpenCode and Gemini CLI support only when local storage formats are clear.
 

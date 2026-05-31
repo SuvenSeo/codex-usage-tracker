@@ -41,14 +41,18 @@ DEFAULT_CLAUDE_HOME = Path.home() / ".claude"
 DEFAULT_CURSOR_AI_DB = Path.home() / ".cursor" / "ai-tracking" / "ai-code-tracking.db"
 DEFAULT_OUTPUT_DIR = Path.cwd() / "out"
 DEFAULT_STATE_FILE = Path.home() / ".codex-usage-tracker" / "state.json"
-PRICING_SOURCE_DATE = "2026-05-29"
+PRICING_SOURCE_DATE = "2026-05-31"
 CODEX_RATE_CARD_URL = "https://help.openai.com/en/articles/20001106-codex-rate-card"
 API_PRICING_URL = "https://developers.openai.com/api/docs/pricing"
+ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing?hsLang=en"
+CURSOR_PRICING_URL = "https://cursor.com/en-US/pricing"
 API_PRICING_BASIS = "standard short-context text token rates"
 
 USAGE_FIELDS = (
     "input_tokens",
     "cached_input_tokens",
+    "cache_creation_input_tokens",
+    "cache_creation_1h_input_tokens",
     "output_tokens",
     "reasoning_output_tokens",
     "total_tokens",
@@ -63,9 +67,9 @@ SOURCE_LABELS = {
     "(unknown)": "(unknown)",
 }
 
-# Rates verified against official OpenAI pages on 2026-05-29.
-# Codex credit estimates use the token-based Codex rate card. API USD is an
-# API-pricing equivalent, not the user's official Codex invoice.
+# Rates verified against official OpenAI/Anthropic pages on 2026-05-31.
+# Codex credit estimates use the token-based Codex rate card. USD estimates are
+# pricing-equivalent calculations, not an official invoice or live balance.
 MODEL_RATES: dict[str, dict[str, dict[str, float]]] = {
     "gpt-5.5": {
         "codex_credits": {"input": 125.0, "cached_input": 12.5, "output": 750.0},
@@ -86,6 +90,39 @@ MODEL_RATES: dict[str, dict[str, dict[str, float]]] = {
     "gpt-5.2": {
         "codex_credits": {"input": 43.75, "cached_input": 4.375, "output": 350.0},
         "api_usd_standard_short": {"input": 1.75, "cached_input": 0.175, "output": 14.0},
+    },
+    "claude-opus-4-8": {
+        "anthropic_usd": {"input": 5.0, "cache_creation": 6.25, "cache_creation_1h": 10.0, "cached_input": 0.50, "output": 25.0},
+    },
+    "claude-opus-4-7": {
+        "anthropic_usd": {"input": 5.0, "cache_creation": 6.25, "cache_creation_1h": 10.0, "cached_input": 0.50, "output": 25.0},
+    },
+    "claude-opus-4-6": {
+        "anthropic_usd": {"input": 5.0, "cache_creation": 6.25, "cache_creation_1h": 10.0, "cached_input": 0.50, "output": 25.0},
+    },
+    "claude-opus-4-5": {
+        "anthropic_usd": {"input": 5.0, "cache_creation": 6.25, "cache_creation_1h": 10.0, "cached_input": 0.50, "output": 25.0},
+    },
+    "claude-opus-4-1": {
+        "anthropic_usd": {"input": 15.0, "cache_creation": 18.75, "cache_creation_1h": 30.0, "cached_input": 1.50, "output": 75.0},
+    },
+    "claude-opus-4": {
+        "anthropic_usd": {"input": 15.0, "cache_creation": 18.75, "cache_creation_1h": 30.0, "cached_input": 1.50, "output": 75.0},
+    },
+    "claude-sonnet-4-6": {
+        "anthropic_usd": {"input": 3.0, "cache_creation": 3.75, "cache_creation_1h": 6.0, "cached_input": 0.30, "output": 15.0},
+    },
+    "claude-sonnet-4-5": {
+        "anthropic_usd": {"input": 3.0, "cache_creation": 3.75, "cache_creation_1h": 6.0, "cached_input": 0.30, "output": 15.0},
+    },
+    "claude-sonnet-4": {
+        "anthropic_usd": {"input": 3.0, "cache_creation": 3.75, "cache_creation_1h": 6.0, "cached_input": 0.30, "output": 15.0},
+    },
+    "claude-haiku-4-5": {
+        "anthropic_usd": {"input": 1.0, "cache_creation": 1.25, "cache_creation_1h": 2.0, "cached_input": 0.10, "output": 5.0},
+    },
+    "claude-haiku-3-5": {
+        "anthropic_usd": {"input": 0.80, "cache_creation": 1.0, "cache_creation_1h": 1.6, "cached_input": 0.08, "output": 4.0},
     },
 }
 
@@ -167,10 +204,19 @@ def normalize_claude_usage(value: Any) -> dict[str, int]:
     base_input = nonnegative_int(value.get("input_tokens", 0))
     cache_creation = nonnegative_int(value.get("cache_creation_input_tokens", 0))
     cache_read = nonnegative_int(value.get("cache_read_input_tokens", 0))
+    cache_creation_1h = 0
+    cache_creation_meta = value.get("cache_creation")
+    if isinstance(cache_creation_meta, dict):
+        cache_creation_1h = min(
+            cache_creation,
+            nonnegative_int(cache_creation_meta.get("ephemeral_1h_input_tokens", 0)),
+        )
     output = nonnegative_int(value.get("output_tokens", 0))
 
     usage["input_tokens"] = base_input + cache_creation + cache_read
     usage["cached_input_tokens"] = cache_read
+    usage["cache_creation_input_tokens"] = cache_creation
+    usage["cache_creation_1h_input_tokens"] = cache_creation_1h
     usage["output_tokens"] = output
     usage["total_tokens"] = usage["input_tokens"] + output
     return usage
@@ -272,12 +318,17 @@ def estimate_amount(usage: dict[str, int], model: str | None, rate_kind: str) ->
         return None
     rate = rates[rate_kind]
     cached = int(usage.get("cached_input_tokens", 0))
+    cache_creation = int(usage.get("cache_creation_input_tokens", 0))
+    cache_creation_1h = min(cache_creation, int(usage.get("cache_creation_1h_input_tokens", 0)))
+    cache_creation_5m = max(0, cache_creation - cache_creation_1h)
     input_total = int(usage.get("input_tokens", 0))
-    uncached_input = max(0, input_total - cached)
+    uncached_input = max(0, input_total - cached - cache_creation)
     output = int(usage.get("output_tokens", 0))
     return (
         (uncached_input / 1_000_000.0) * rate["input"]
-        + (cached / 1_000_000.0) * rate["cached_input"]
+        + (cached / 1_000_000.0) * rate.get("cached_input", rate["input"])
+        + (cache_creation_5m / 1_000_000.0) * rate.get("cache_creation", rate["input"])
+        + (cache_creation_1h / 1_000_000.0) * rate.get("cache_creation_1h", rate.get("cache_creation", rate["input"]))
         + (output / 1_000_000.0) * rate["output"]
     )
 
@@ -287,8 +338,10 @@ def pricing_metadata() -> dict[str, Any]:
         "source_date": PRICING_SOURCE_DATE,
         "codex_rate_card_url": CODEX_RATE_CARD_URL,
         "api_pricing_url": API_PRICING_URL,
+        "anthropic_pricing_url": ANTHROPIC_PRICING_URL,
+        "cursor_pricing_url": CURSOR_PRICING_URL,
         "api_pricing_basis": API_PRICING_BASIS,
-        "caveat": "Codex credits are estimated from local Codex token logs and official OpenAI token rates. Claude Code token totals and Cursor activity come from local app data, but official billing, remaining credits, fast mode uplifts, taxes, and plan exceptions must be checked with the vendor.",
+        "caveat": "Codex credits and Claude USD are estimated from local token logs and official token rates. Cursor activity comes from local app data, but official billing, remaining credits, fast mode uplifts, taxes, and plan exceptions must be checked with the vendor.",
     }
 
 
@@ -532,6 +585,7 @@ def parse_claude_jsonl(path: Path, report_tz: Any = None) -> dict[str, Any]:
     total_usage = zero_usage()
     tool_counts: dict[str, int] = defaultdict(int)
     model_counts: Counter[str] = Counter()
+    seen_message_ids: set[str] = set()
     line_count = 0
     request_count = 0
 
@@ -568,6 +622,11 @@ def parse_claude_jsonl(path: Path, report_tz: Any = None) -> dict[str, Any]:
 
             usage = normalize_claude_usage(message.get("usage"))
             if usage_total(usage) > 0:
+                message_id = str(message.get("id") or obj.get("requestId") or obj.get("uuid") or "")
+                if message_id and message_id in seen_message_ids:
+                    continue
+                if message_id:
+                    seen_message_ids.add(message_id)
                 add_usage(total_usage, usage)
                 request_count += 1
                 if ts:
@@ -610,7 +669,7 @@ def parse_claude_jsonl(path: Path, report_tz: Any = None) -> dict[str, Any]:
         "active_daily": active_daily,
         "tool_counts": dict(tool_counts),
         "estimated_codex_credits": 0.0,
-        "estimated_api_usd_equiv": 0.0,
+        "estimated_api_usd_equiv": estimate_amount(total_usage, model, "anthropic_usd") or 0.0,
     }
 
 
@@ -968,8 +1027,11 @@ def aggregate_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
             day_row = daily[day]
             day_row["date"] = day
             add_usage(day_row["usage"], day_usage)
-            day_row["estimated_codex_credits"] += estimate_amount(day_usage, model, "codex_credits") or 0.0
-            day_row["estimated_api_usd_equiv"] += estimate_amount(day_usage, model, "api_usd_standard_short") or 0.0
+            if app == "codex":
+                day_row["estimated_codex_credits"] += estimate_amount(day_usage, model, "codex_credits") or 0.0
+                day_row["estimated_api_usd_equiv"] += estimate_amount(day_usage, model, "api_usd_standard_short") or 0.0
+            elif app == "claude":
+                day_row["estimated_api_usd_equiv"] += estimate_amount(day_usage, model, "anthropic_usd") or 0.0
             day_row["threads"].add(thread["thread_id"])
 
         for day, seconds in thread.get("active_daily", {}).items():
@@ -1334,7 +1396,7 @@ def build_gui_view_model(
             ("Apps", number(len(summary.get("sources", [])))),
             ("Total tokens", number(total_tokens)),
             ("Estimated Codex credits", number(summary["estimated_codex_credits"])),
-            ("API-equivalent USD", f"${number(summary['estimated_api_usd_equiv'])}"),
+            ("Estimated USD", f"${number(summary['estimated_api_usd_equiv'])}"),
             ("Estimated active time", f"{minutes(summary['active_seconds'])} min"),
             ("Events", number(summary.get("event_count", 0))),
             ("Requests", number(summary.get("request_count", 0))),
@@ -1374,7 +1436,7 @@ def build_gui_view_model(
                     ("cached", "Cached input"),
                     ("output", "Output"),
                     ("credits", "Credits"),
-                    ("api_usd", "API USD"),
+                    ("api_usd", "USD"),
                     ("active", "Active min"),
                 ),
                 "rows": source_rows,
@@ -1388,7 +1450,7 @@ def build_gui_view_model(
                     ("output", "Output"),
                     ("cache_hit", "Cache hit"),
                     ("credits", "Credits"),
-                    ("api_usd", "API USD"),
+                    ("api_usd", "USD"),
                     ("active", "Active min"),
                 ),
                 "rows": daily_rows,
@@ -1404,7 +1466,7 @@ def build_gui_view_model(
                     ("tokens", "Tokens"),
                     ("cache_hit", "Cache hit"),
                     ("credits", "Credits"),
-                    ("api_usd", "API USD"),
+                    ("api_usd", "USD"),
                     ("active", "Active min"),
                 ),
                 "rows": project_rows,
@@ -1419,7 +1481,7 @@ def build_gui_view_model(
                     ("cached", "Cached input"),
                     ("output_share", "Output share"),
                     ("credits", "Credits"),
-                    ("api_usd", "API USD"),
+                    ("api_usd", "USD"),
                 ),
                 "rows": model_rows,
             },
@@ -1435,7 +1497,7 @@ def build_gui_view_model(
                     ("tokens", "Tokens"),
                     ("cache_hit", "Cache hit"),
                     ("credits", "Credits"),
-                    ("api_usd", "API USD"),
+                    ("api_usd", "USD"),
                     ("active", "Active min"),
                 ),
                 "rows": thread_rows,
@@ -1736,7 +1798,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <div class="metric"><span>Threads</span><strong>{number(summary["thread_count"])}</strong></div>
       <div class="metric"><span>Total tokens</span><strong>{number(total_tokens)}</strong></div>
       <div class="metric"><span>Estimated Codex credits</span><strong>{number(summary["estimated_codex_credits"])}</strong></div>
-      <div class="metric"><span>API-equivalent USD</span><strong>${number(summary["estimated_api_usd_equiv"])}</strong></div>
+      <div class="metric"><span>Estimated USD</span><strong>${number(summary["estimated_api_usd_equiv"])}</strong></div>
       <div class="metric"><span>Estimated active time</span><strong>{minutes(summary["active_seconds"])} min</strong></div>
       <div class="metric"><span>Events</span><strong>{number(summary.get("event_count", 0))}</strong></div>
       <div class="metric"><span>Requests</span><strong>{number(summary.get("request_count", 0))}</strong></div>
@@ -1758,7 +1820,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <h2>Apps</h2>
       <div class="panel">
         <table data-filterable>
-          <thead><tr><th>App</th><th>Threads</th><th>Requests</th><th>Events</th><th>Tokens</th><th>Input</th><th>Cached input</th><th>Output</th><th>Credits</th><th>API USD</th><th>Active min</th></tr></thead>
+          <thead><tr><th>App</th><th>Threads</th><th>Requests</th><th>Events</th><th>Tokens</th><th>Input</th><th>Cached input</th><th>Output</th><th>Credits</th><th>USD</th><th>Active min</th></tr></thead>
           <tbody>{source_html}</tbody>
         </table>
       </div>
@@ -1767,7 +1829,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <h2>Daily Usage</h2>
       <div class="panel">
         <table data-filterable>
-          <thead><tr><th>Date</th><th>Token volume</th><th>Total</th><th>Input</th><th>Cached input</th><th>Output</th><th>Cache hit</th><th>Credits</th><th>API USD</th><th>Active min</th></tr></thead>
+          <thead><tr><th>Date</th><th>Token volume</th><th>Total</th><th>Input</th><th>Cached input</th><th>Output</th><th>Cache hit</th><th>Credits</th><th>USD</th><th>Active min</th></tr></thead>
           <tbody>{daily_html}</tbody>
         </table>
       </div>
@@ -1776,7 +1838,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <h2>Projects</h2>
       <div class="panel">
         <table data-filterable>
-          <thead><tr><th>App</th><th>Project</th><th>Folder</th><th>Threads</th><th>Requests</th><th>Events</th><th>Tokens</th><th>Cache hit</th><th>Credits</th><th>API USD</th><th>Active min</th></tr></thead>
+          <thead><tr><th>App</th><th>Project</th><th>Folder</th><th>Threads</th><th>Requests</th><th>Events</th><th>Tokens</th><th>Cache hit</th><th>Credits</th><th>USD</th><th>Active min</th></tr></thead>
           <tbody>{project_html}</tbody>
         </table>
       </div>
@@ -1785,7 +1847,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <h2>Models</h2>
       <div class="panel">
         <table data-filterable>
-          <thead><tr><th>App</th><th>Model</th><th>Threads</th><th>Requests</th><th>Tokens</th><th>Cached input</th><th>Output</th><th>Output share</th><th>Credits</th><th>API USD</th></tr></thead>
+          <thead><tr><th>App</th><th>Model</th><th>Threads</th><th>Requests</th><th>Tokens</th><th>Cached input</th><th>Output</th><th>Output share</th><th>Credits</th><th>USD</th></tr></thead>
           <tbody>{model_html}</tbody>
         </table>
       </div>
@@ -1794,13 +1856,13 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <h2>Most Expensive Threads</h2>
       <div class="panel">
         <table data-filterable>
-          <thead><tr><th>App</th><th>Thread</th><th>Project</th><th>Model</th><th>Last activity</th><th>Requests</th><th>Events</th><th>Tokens</th><th>Cache hit</th><th>Credits</th><th>API USD</th><th>Active min</th></tr></thead>
+          <thead><tr><th>App</th><th>Thread</th><th>Project</th><th>Model</th><th>Last activity</th><th>Requests</th><th>Events</th><th>Tokens</th><th>Cache hit</th><th>Credits</th><th>USD</th><th>Active min</th></tr></thead>
           <tbody>{thread_html}</tbody>
         </table>
       </div>
     </section>
     <div class="note">
-      Credit estimates use OpenAI's Codex token-based rate card for Codex records only, verified {html.escape(str(pricing.get("source_date") or ""))}. API USD uses {html.escape(str(pricing.get("api_pricing_basis") or "public API pricing"))} where a known OpenAI model rate exists. Claude Code token totals and Cursor activity are local estimates, not authoritative vendor billing.
+      Credit estimates use OpenAI's Codex token-based rate card for Codex records only, and Claude USD uses Anthropic token pricing where known local model rates exist. Cursor activity is local activity/time only, not authoritative token or billing data.
     </div>
   </main>
   <footer>
@@ -2093,7 +2155,11 @@ def demo_thread(
         "active_daily": active_daily,
         "tool_counts": {"shell_command": 3, "apply_patch": 2},
         "estimated_codex_credits": estimate_amount(usage, model, "codex_credits") if app == "codex" else 0.0,
-        "estimated_api_usd_equiv": estimate_amount(usage, model, "api_usd_standard_short") if app == "codex" else 0.0,
+        "estimated_api_usd_equiv": (
+            estimate_amount(usage, model, "api_usd_standard_short")
+            if app == "codex"
+            else estimate_amount(usage, model, "anthropic_usd") if app == "claude" else 0.0
+        ),
     }
 
 
@@ -2238,7 +2304,7 @@ def command_period_report(args: argparse.Namespace, period: str) -> int:
         ("output", "Output"),
         ("cache_hit", "Cache hit"),
         ("credits", "Credits"),
-        ("api_usd", "API USD"),
+        ("api_usd", "USD"),
     ], args)
 
 
@@ -2269,7 +2335,7 @@ def command_session(args: argparse.Namespace) -> int:
         ("tokens", "Tokens"),
         ("cache_hit", "Cache hit"),
         ("credits", "Credits"),
-        ("api_usd", "API USD"),
+        ("api_usd", "USD"),
     ], args)
 
 
@@ -2292,7 +2358,7 @@ def command_project(args: argparse.Namespace) -> int:
         ("output", "Output"),
         ("cache_hit", "Cache hit"),
         ("credits", "Credits"),
-        ("api_usd", "API USD"),
+        ("api_usd", "USD"),
     ], args)
 
 
@@ -2315,7 +2381,7 @@ def command_model(args: argparse.Namespace) -> int:
         ("output", "Output"),
         ("cache_hit", "Cache hit"),
         ("credits", "Credits"),
-        ("api_usd", "API USD"),
+        ("api_usd", "USD"),
     ], args)
 
 
@@ -2337,7 +2403,7 @@ def command_source(args: argparse.Namespace) -> int:
         ("output", "Output"),
         ("cache_hit", "Cache hit"),
         ("credits", "Credits"),
-        ("api_usd", "API USD"),
+        ("api_usd", "USD"),
     ], args)
 
 
@@ -2428,11 +2494,17 @@ def command_doctor(args: argparse.Namespace) -> int:
 
     threads = codex_threads + claude_threads + cursor_threads
 
-    unknown_models = sorted({thread.get("model") for thread in threads if thread.get("model") and not rates_for_model(thread.get("model"))})
+    unknown_models = sorted({
+        thread.get("model")
+        for thread in threads
+        if thread.get("model")
+        and usage_total(thread.get("usage") or {}) > 0
+        and not rates_for_model(thread.get("model"))
+    })
     if unknown_models:
-        line("WARN", "OpenAI pricing table", "unknown/non-OpenAI models: " + ", ".join(unknown_models[:5]))
+        line("WARN", "Pricing table", "unknown priced models: " + ", ".join(unknown_models[:5]))
     else:
-        line("OK", "OpenAI pricing table", f"{len(MODEL_RATES)} model families")
+        line("OK", "Pricing table", f"{len(MODEL_RATES)} model families")
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -2562,7 +2634,7 @@ class CodexUsageTrackerGui:
             "Apps",
             "Total tokens",
             "Estimated Codex credits",
-            "API-equivalent USD",
+            "Estimated USD",
             "Estimated active time",
             "Events",
             "Requests",

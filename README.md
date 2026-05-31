@@ -7,7 +7,7 @@
 
 Local-first usage analytics for Codex, Claude Code, and Cursor.
 
-Codex Usage Tracker reads local AI coding data and generates a private dashboard for token usage, app/source totals, estimated Codex credits, API-equivalent cost estimates, project breakdowns, terminal reports, and optional WakaTime `ai coding` time.
+Codex Usage Tracker reads local AI coding data and generates a private dashboard for token usage, app/source totals, estimated Codex credits, estimated USD, project breakdowns, terminal reports, and optional WakaTime `ai coding` time.
 
 ![Demo dashboard](https://raw.githubusercontent.com/SuvenSeo/codex-usage-tracker/main/docs/assets/demo-dashboard.svg)
 
@@ -31,7 +31,7 @@ This tool gives you those answers locally, without uploading Codex transcripts t
 - Generates `HTML`, `CSV`, and `JSON` reports
 - Prints `daily`, `weekly`, `monthly`, `session`, `project`, `model`, and `source` terminal reports
 - Estimates Codex credits from input, cached input, and output tokens
-- Shows API-equivalent USD estimates for rough comparison
+- Shows estimated USD for Codex and Claude Code where local token logs and known rates exist
 - Includes `doctor` and `demo` commands for first-run confidence
 - Supports date filters with `--days`, `--since`, `--until`, and `--timezone`
 - Supports share-safe output with `--redact` and `--hash-projects`
@@ -214,13 +214,12 @@ The tracker reports local token counts where app logs provide them.
 Cost estimates are not an invoice:
 
 - `estimated_codex_credits` uses OpenAI's current Codex token-based rate card for Codex records.
-- `estimated_api_usd_equiv` uses public OpenAI API standard short-context prices as an equivalent estimate when a known OpenAI model rate exists.
-- Claude Code token totals are parsed from local Claude Code transcripts, but Anthropic billing is not estimated yet.
+- `estimated_api_usd_equiv` uses public OpenAI API standard short-context prices for Codex and Anthropic token prices for Claude Code when known local model rates exist.
 - Cursor local AI tracking exposes AI edit activity, request counts, models, timestamps, and active time, but not exact token totals.
-- The included rates were verified against official OpenAI docs on 2026-05-29.
+- The included rates were verified against official OpenAI and Anthropic docs on 2026-05-31.
 - Real billing/credit balance, fast-mode uplifts, taxes, and any workspace exceptions should be checked with the vendor.
 
-Pricing can change. The current source pages are OpenAI's [Codex rate card](https://help.openai.com/en/articles/20001106-codex-rate-card) and [API pricing](https://developers.openai.com/api/docs/pricing). Review and update `MODEL_RATES` in `codex_app_tracker.py` when OpenAI updates rates.
+Pricing can change. The current source pages are OpenAI's [Codex rate card](https://help.openai.com/en/articles/20001106-codex-rate-card), OpenAI [API pricing](https://developers.openai.com/api/docs/pricing), Anthropic [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing?hsLang=en), and Cursor [pricing](https://cursor.com/en-US/pricing). Review and update `MODEL_RATES` in `codex_app_tracker.py` when vendor rates change.
 
 ## Privacy
 

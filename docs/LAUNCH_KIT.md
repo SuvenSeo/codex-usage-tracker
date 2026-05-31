@@ -21,7 +21,7 @@ It reads selected local app data and generates a dashboard for:
 - token usage by day/project/thread/model
 - app/source totals
 - estimated Codex credits
-- API-equivalent cost estimates
+- estimated USD where token logs and known rates exist
 - Cursor AI edit activity and request counts
 - active coding time
 - terminal reports for daily/project/model/session/source views

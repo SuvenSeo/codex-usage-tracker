@@ -172,7 +172,7 @@ class CodexUsageTrackerTests(unittest.TestCase):
     def test_summary_includes_pricing_metadata(self):
         summary = tracker.aggregate_threads(tracker.demo_threads())
 
-        self.assertEqual(summary["pricing"]["source_date"], "2026-05-29")
+        self.assertEqual(summary["pricing"]["source_date"], "2026-05-31")
         self.assertIn("codex-rate-card", summary["pricing"]["codex_rate_card_url"])
 
     def test_claude_jsonl_parser_sums_usage(self):
@@ -195,11 +195,31 @@ class CodexUsageTrackerTests(unittest.TestCase):
                     "cwd": "C:\\Projects\\demo",
                     "aiTitle": "Demo Claude work",
                     "message": {
+                        "id": "msg_1",
                         "role": "assistant",
                         "model": "claude-sonnet-4-6",
                         "usage": {
                             "input_tokens": 10,
                             "cache_creation_input_tokens": 5,
+                            "cache_creation": {"ephemeral_1h_input_tokens": 5, "ephemeral_5m_input_tokens": 0},
+                            "cache_read_input_tokens": 3,
+                            "output_tokens": 2,
+                        },
+                    },
+                },
+                {
+                    "timestamp": "2026-05-02T09:00:11Z",
+                    "type": "assistant",
+                    "sessionId": "claude-session-1",
+                    "cwd": "C:\\Projects\\demo",
+                    "message": {
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {
+                            "input_tokens": 10,
+                            "cache_creation_input_tokens": 5,
+                            "cache_creation": {"ephemeral_1h_input_tokens": 5, "ephemeral_5m_input_tokens": 0},
                             "cache_read_input_tokens": 3,
                             "output_tokens": 2,
                         },
@@ -215,8 +235,10 @@ class CodexUsageTrackerTests(unittest.TestCase):
             self.assertEqual(threads[0]["model"], "claude-sonnet-4-6")
             self.assertEqual(threads[0]["usage"]["input_tokens"], 18)
             self.assertEqual(threads[0]["usage"]["cached_input_tokens"], 3)
+            self.assertEqual(threads[0]["usage"]["cache_creation_1h_input_tokens"], 5)
             self.assertEqual(threads[0]["usage"]["output_tokens"], 2)
             self.assertEqual(threads[0]["usage"]["total_tokens"], 20)
+            self.assertGreater(threads[0]["estimated_api_usd_equiv"], 0)
 
     def test_cursor_parser_reads_ai_tracking_db(self):
         with tempfile.TemporaryDirectory() as tmp:
