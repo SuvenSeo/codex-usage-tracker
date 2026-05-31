@@ -33,6 +33,10 @@ try {
         --hidden-import tkinter.messagebox `
         $Launcher
 
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller failed with exit code $LASTEXITCODE. If the EXE is open, close it and rebuild."
+    }
+
     if (-not (Test-Path -LiteralPath $ExePath)) {
         throw "Expected EXE was not created: $ExePath"
     }

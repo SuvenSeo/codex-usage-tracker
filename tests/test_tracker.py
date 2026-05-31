@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import codex_app_tracker as tracker
+import codex_usage_tracker_gui as gui_launcher
 
 
 class CodexUsageTrackerTests(unittest.TestCase):
@@ -129,6 +130,11 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertEqual(args.command, "gui")
         self.assertEqual(args.refresh_seconds, 5)
         self.assertIs(args.func, tracker.command_gui)
+
+    def test_packaged_gui_launcher_defaults_to_all_sources(self):
+        args = gui_launcher.launcher_args([])
+
+        self.assertEqual(args, ["--sources", "all", "gui"])
 
     def test_gui_refresh_seconds_rejects_low_values(self):
         with self.assertRaises(ValueError):

@@ -107,7 +107,7 @@ out/dashboard.html
 Open the live native desktop dashboard:
 
 ```bash
-codex-usage-tracker --days 7 --timezone Asia/Colombo gui
+codex-usage-tracker --sources all --days 7 --timezone Asia/Colombo gui
 ```
 
 The GUI uses Python's built-in Tkinter toolkit, polls selected local sources every 10
@@ -126,7 +126,8 @@ python -m pip install -e ".[build]"
 ```
 
 The generated app is written to `dist\CodexUsageTracker.exe`. Double-clicking it
-opens the live GUI. It reads only selected local data folders on your machine.
+opens the live GUI with Codex, Claude Code, and Cursor selected. It reads only
+local data folders on your machine.
 
 Try a safe public demo:
 
