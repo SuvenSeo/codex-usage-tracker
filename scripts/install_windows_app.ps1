@@ -17,8 +17,8 @@ function Resolve-SourceExe {
     }
 
     $candidates = @(
-        (Join-Path $Root "dist\CodexUsageTrackerAllSources.exe"),
-        (Join-Path $Root "dist\CodexUsageTracker.exe")
+        (Join-Path $Root "dist\CodexUsageTracker.exe"),
+        (Join-Path $Root "dist\CodexUsageTrackerAllSources.exe")
     )
 
     foreach ($candidate in $candidates) {

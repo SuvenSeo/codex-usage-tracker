@@ -174,6 +174,18 @@ Source selection is opt-in. The default is `--sources codex`; use
 `--sources claude`, `--sources cursor`, or a comma-separated list such as
 `--sources codex,claude`.
 
+Audit every local and official source the tracker knows about:
+
+```bash
+codex-usage-tracker --sources all source-audit
+```
+
+The audit writes `out/source_audit.json` and `out/source_audit.md`. It separates
+exact local metrics from estimates and blocked sources. For example, Cursor's
+legacy `state.vscdb` daily stats can show historical suggested/accepted line
+counts, but not exact Cursor tokens, credits, or spend. Vendor admin APIs can
+provide deeper billing detail only when the matching admin key is configured.
+
 ## WakaTime
 
 WakaTime sync is optional. It requires `wakatime-cli` and a normal `~/.wakatime.cfg` file.

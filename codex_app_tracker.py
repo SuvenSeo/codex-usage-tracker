@@ -39,6 +39,10 @@ TRACKER_DIR = Path(__file__).resolve().parent
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_CLAUDE_HOME = Path.home() / ".claude"
 DEFAULT_CURSOR_AI_DB = Path.home() / ".cursor" / "ai-tracking" / "ai-code-tracking.db"
+DEFAULT_CURSOR_STATE_DB = (
+    Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+    / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+)
 DEFAULT_OUTPUT_DIR = Path.cwd() / "out"
 DEFAULT_STATE_FILE = Path.home() / ".codex-usage-tracker" / "state.json"
 PRICING_SOURCE_DATE = "2026-05-31"
@@ -46,6 +50,11 @@ CODEX_RATE_CARD_URL = "https://help.openai.com/en/articles/20001106-codex-rate-c
 API_PRICING_URL = "https://developers.openai.com/api/docs/pricing"
 ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing?hsLang=en"
 CURSOR_PRICING_URL = "https://cursor.com/en-US/pricing"
+OPENAI_USAGE_API_URL = "https://platform.openai.com/docs/api-reference/usage"
+OPENAI_COSTS_API_URL = "https://platform.openai.com/docs/api-reference/usage/costs"
+ANTHROPIC_USAGE_COST_API_URL = "https://platform.claude.com/docs/en/build-with-claude/usage-cost-api"
+ANTHROPIC_CLAUDE_CODE_ANALYTICS_URL = "https://platform.claude.com/docs/en/manage-claude/claude-code-analytics-api"
+CURSOR_ADMIN_API_URL = "https://docs.cursor.com/account/teams/admin-api"
 API_PRICING_BASIS = "standard short-context text token rates"
 
 USAGE_FIELDS = (
@@ -793,6 +802,55 @@ def load_cursor_threads(cursor_db: Path, days: int | None = None, report_tz: Any
         })
 
     return sorted(threads, key=lambda item: item.get("ended_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+
+def read_cursor_daily_stats(cursor_state_db: Path) -> list[dict[str, Any]]:
+    if not cursor_state_db.exists():
+        return []
+
+    rows: list[dict[str, Any]] = []
+    try:
+        con = sqlite3.connect(f"file:{cursor_state_db}?mode=ro", uri=True, timeout=3)
+        tables = {
+            row[0]
+            for row in con.execute("select name from sqlite_master where type='table'").fetchall()
+        }
+        if "ItemTable" not in tables:
+            con.close()
+            return []
+
+        for key, value in con.execute(
+            "select key, value from ItemTable where key like 'aiCodeTracking.dailyStats.%' order by key"
+        ):
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="replace")
+            try:
+                data = json.loads(value)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+
+            date = str(data.get("date") or "")
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+                match = re.search(r"(\d{4}-\d{2}-\d{2})$", str(key))
+                date = match.group(1) if match else ""
+            if not date:
+                continue
+
+            rows.append({
+                "date": date,
+                "tab_suggested_lines": nonnegative_int(data.get("tabSuggestedLines")),
+                "tab_accepted_lines": nonnegative_int(data.get("tabAcceptedLines")),
+                "composer_suggested_lines": nonnegative_int(data.get("composerSuggestedLines")),
+                "composer_accepted_lines": nonnegative_int(data.get("composerAcceptedLines")),
+            })
+        con.close()
+    except Exception as exc:
+        print(f"warning: could not read {cursor_state_db}: {exc}", file=sys.stderr)
+        return []
+
+    return sorted(rows, key=lambda row: row["date"])
 
 
 def load_selected_threads(args: argparse.Namespace, report_tz: Any = None) -> list[dict[str, Any]]:
@@ -1999,6 +2057,255 @@ def find_wakatime_cli() -> str | None:
     return shutil.which("wakatime-cli")
 
 
+def env_present(*names: str) -> bool:
+    return any(bool(os.environ.get(name)) for name in names)
+
+
+def thread_range_text(threads: list[dict[str, Any]], report_tz: Any = None) -> str:
+    starts = [thread.get("started_at") for thread in threads if thread.get("started_at")]
+    ends = [thread.get("ended_at") for thread in threads if thread.get("ended_at")]
+    if not starts and not ends:
+        return ""
+    start = min(starts or ends)
+    end = max(ends or starts)
+    return f"{fmt_dt(start, report_tz)} to {fmt_dt(end, report_tz)}"
+
+
+def audit_totals_from_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
+    summary = aggregate_threads(threads)
+    return {
+        "threads": summary["thread_count"],
+        "events": summary["event_count"],
+        "requests": summary["request_count"],
+        "tokens": usage_total(summary["usage"]),
+        "credits": round(summary["estimated_codex_credits"], 4),
+        "usd": round(summary["estimated_api_usd_equiv"], 4),
+        "active_minutes": round(summary["active_seconds"] / 60.0, 1),
+    }
+
+
+def source_path(path: Path, redact: bool) -> str:
+    return "(redacted)" if redact else str(path)
+
+
+def build_source_audit(args: argparse.Namespace, report_tz: Any = None) -> dict[str, Any]:
+    redact = bool(getattr(args, "redact", False))
+    codex_home = Path(args.codex_home).expanduser()
+    claude_home = Path(args.claude_home).expanduser()
+    cursor_db = Path(args.cursor_db).expanduser()
+    cursor_state_db = Path(args.cursor_state_db).expanduser()
+    appdata = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+    claude_desktop_dir = appdata / "Claude"
+    rows: list[dict[str, Any]] = []
+
+    def add(row: dict[str, Any]) -> None:
+        row.setdefault("tokens", 0)
+        row.setdefault("credits", 0.0)
+        row.setdefault("usd", 0.0)
+        row.setdefault("active_minutes", 0.0)
+        row.setdefault("local_path", "")
+        row.setdefault("docs_url", "")
+        rows.append(row)
+
+    codex_files = iter_rollout_files(codex_home) if codex_home.exists() else []
+    codex_threads = load_threads(codex_home, report_tz=report_tz) if codex_files else []
+    codex_totals = audit_totals_from_threads(codex_threads)
+    add({
+        "source": "Codex local logs",
+        "status": "available" if codex_threads else "missing local logs",
+        "records": f"{len(codex_files)} rollout files / {codex_totals['threads']} parsed threads",
+        "date_range": thread_range_text(codex_threads, report_tz),
+        "exact": "tokens, requests, events from local rollout logs",
+        "estimated": "Codex credits and USD from verified rate cards",
+        "blocked": "exact invoice, payment status, and remaining account credits are not stored in local logs",
+        "local_path": source_path(codex_home, redact),
+        "docs_url": CODEX_RATE_CARD_URL,
+        **codex_totals,
+    })
+
+    claude_files = iter_claude_files(claude_home) if claude_home.exists() else []
+    claude_threads = load_claude_threads(claude_home, report_tz=report_tz) if claude_files else []
+    claude_totals = audit_totals_from_threads(claude_threads)
+    add({
+        "source": "Claude Code local JSONL",
+        "status": "available" if claude_threads else "missing local logs",
+        "records": f"{len(claude_files)} JSONL files / {claude_totals['threads']} parsed sessions",
+        "date_range": thread_range_text(claude_threads, report_tz),
+        "exact": "tokens and cache token fields from Claude Code transcripts",
+        "estimated": "USD from Anthropic model prices",
+        "blocked": "Claude web/desktop chats, subscription quota, and invoice totals are not in these JSONL files",
+        "local_path": source_path(claude_home, redact),
+        "docs_url": ANTHROPIC_PRICING_URL,
+        **claude_totals,
+    })
+
+    claude_desktop_files = list(claude_desktop_dir.glob("*")) if claude_desktop_dir.exists() else []
+    add({
+        "source": "Claude Desktop/Web local app",
+        "status": "no local usage ledger",
+        "records": f"{len(claude_desktop_files)} local app files",
+        "date_range": "",
+        "exact": "configuration only",
+        "estimated": "none",
+        "blocked": "chat/token/billing history requires vendor export or admin APIs; local app folder did not expose usage logs",
+        "local_path": source_path(claude_desktop_dir, redact),
+    })
+
+    cursor_threads = load_cursor_threads(cursor_db, report_tz=report_tz) if cursor_db.exists() else []
+    cursor_totals = audit_totals_from_threads(cursor_threads)
+    add({
+        "source": "Cursor AI tracking DB",
+        "status": "activity only" if cursor_threads else "missing local DB",
+        "records": f"{cursor_totals['threads']} parsed conversations",
+        "date_range": thread_range_text(cursor_threads, report_tz),
+        "exact": "AI edit activity rows, requests, models, and active-time estimate",
+        "estimated": "none",
+        "blocked": "exact tokens, credits, and spend are not exposed in this local DB",
+        "local_path": source_path(cursor_db, redact),
+        "docs_url": CURSOR_PRICING_URL,
+        **cursor_totals,
+    })
+
+    cursor_daily_stats = read_cursor_daily_stats(cursor_state_db)
+    cursor_daily_totals = {
+        "tab_suggested_lines": sum(row["tab_suggested_lines"] for row in cursor_daily_stats),
+        "tab_accepted_lines": sum(row["tab_accepted_lines"] for row in cursor_daily_stats),
+        "composer_suggested_lines": sum(row["composer_suggested_lines"] for row in cursor_daily_stats),
+        "composer_accepted_lines": sum(row["composer_accepted_lines"] for row in cursor_daily_stats),
+    }
+    date_range = ""
+    if cursor_daily_stats:
+        date_range = f"{cursor_daily_stats[0]['date']} to {cursor_daily_stats[-1]['date']}"
+    add({
+        "source": "Cursor legacy daily stats",
+        "status": "available" if cursor_daily_stats else "missing daily stats",
+        "records": f"{len(cursor_daily_stats)} daily rows",
+        "date_range": date_range,
+        "exact": "suggested and accepted line counters",
+        "estimated": "none",
+        "blocked": "tokens, credits, spend, model costs, and conversations are not in these daily counters",
+        "local_path": source_path(cursor_state_db, redact),
+        "docs_url": CURSOR_PRICING_URL,
+        "tokens": 0,
+        "credits": 0.0,
+        "usd": 0.0,
+        "active_minutes": 0.0,
+        "extra": cursor_daily_totals,
+    })
+
+    add({
+        "source": "OpenAI Admin Usage/Costs API",
+        "status": "configured" if env_present("OPENAI_ADMIN_KEY") else "not configured",
+        "records": "not queried",
+        "date_range": "",
+        "exact": "OpenAI API organization usage and costs when an admin key is provided",
+        "estimated": "none",
+        "blocked": "OPENAI_ADMIN_KEY is not configured on this machine",
+        "docs_url": OPENAI_COSTS_API_URL,
+    })
+    add({
+        "source": "Anthropic Usage/Cost APIs",
+        "status": "configured" if env_present("ANTHROPIC_ADMIN_KEY") else "not configured",
+        "records": "not queried",
+        "date_range": "",
+        "exact": "Anthropic organization costs and Claude Code analytics when admin access is provided",
+        "estimated": "none",
+        "blocked": "ANTHROPIC_ADMIN_KEY is not configured on this machine",
+        "docs_url": ANTHROPIC_USAGE_COST_API_URL,
+    })
+    add({
+        "source": "Cursor Team Admin API",
+        "status": "configured" if env_present("CURSOR_ADMIN_API_KEY") else "not configured",
+        "records": "not queried",
+        "date_range": "",
+        "exact": "team usage and spending when a Cursor admin key is provided",
+        "estimated": "none",
+        "blocked": "CURSOR_ADMIN_API_KEY is not configured on this machine",
+        "docs_url": CURSOR_ADMIN_API_URL,
+    })
+    add({
+        "source": "WakaTime",
+        "status": "configured" if has_wakatime_key() else "not configured",
+        "records": "optional sync target",
+        "date_range": "",
+        "exact": "coding-time heartbeats after sync",
+        "estimated": "none",
+        "blocked": "no AI tokens, credits, or vendor spend in WakaTime",
+        "local_path": find_wakatime_cli() or "",
+    })
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "pricing_source_date": PRICING_SOURCE_DATE,
+        "scope": "local all-time inventory plus official API availability",
+        "sources": rows,
+    }
+
+
+def markdown_escape(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def render_source_audit_markdown(audit: dict[str, Any]) -> str:
+    lines = [
+        "# AI Coding Usage Source Audit",
+        "",
+        f"Generated: {audit.get('generated_at', '')}",
+        f"Scope: {audit.get('scope', '')}",
+        "",
+        "| Source | Status | Records | Range | Tokens | Credits | USD | Exact | Estimated | Blocked |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for row in audit.get("sources", []):
+        lines.append(
+            "| "
+            + " | ".join(
+                markdown_escape(value)
+                for value in (
+                    row.get("source", ""),
+                    row.get("status", ""),
+                    row.get("records", ""),
+                    row.get("date_range", ""),
+                    number(row.get("tokens", 0)),
+                    number(row.get("credits", 0.0)),
+                    number(row.get("usd", 0.0)),
+                    row.get("exact", ""),
+                    row.get("estimated", ""),
+                    row.get("blocked", ""),
+                )
+            )
+            + " |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_source_audit(output_dir: Path, audit: dict[str, Any]) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "source_audit_json": output_dir / "source_audit.json",
+        "source_audit_md": output_dir / "source_audit.md",
+    }
+    write_json(paths["source_audit_json"], audit)
+    paths["source_audit_md"].write_text(render_source_audit_markdown(audit), encoding="utf-8")
+    return paths
+
+
+def source_audit_cli_rows(audit: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for row in audit.get("sources", []):
+        rows.append({
+            "source": row.get("source", ""),
+            "status": row.get("status", ""),
+            "records": row.get("records", ""),
+            "range": row.get("date_range", ""),
+            "tokens": row.get("tokens", 0),
+            "credits": row.get("credits", 0.0),
+            "usd": row.get("usd", 0.0),
+            "blocked": row.get("blocked", ""),
+        })
+    return rows
+
+
 def recent_wakatime_candidates(
     threads: list[dict[str, Any]],
     since_minutes: int,
@@ -2269,6 +2576,7 @@ def command_report(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).expanduser()
     threads, summary, report_tz = load_report_data(args)
     paths = write_reports(threads, summary, output_dir, report_tz=report_tz)
+    paths.update(write_source_audit(output_dir, build_source_audit(args, report_tz=report_tz)))
     print_report_summary(summary, paths)
     return 0
 
@@ -2407,11 +2715,38 @@ def command_source(args: argparse.Namespace) -> int:
     ], args)
 
 
+def command_source_audit(args: argparse.Namespace) -> int:
+    report_tz = resolve_timezone(getattr(args, "timezone", None))
+    output_dir = Path(args.output_dir).expanduser()
+    audit = build_source_audit(args, report_tz=report_tz)
+    paths = write_source_audit(output_dir, audit)
+
+    if args.format == "json":
+        print(json.dumps(audit, indent=2, ensure_ascii=False))
+    elif args.format == "markdown":
+        print(render_source_audit_markdown(audit), end="")
+    else:
+        emit_rows(source_audit_cli_rows(audit), [
+            ("source", "Source"),
+            ("status", "Status"),
+            ("records", "Records"),
+            ("range", "Range"),
+            ("tokens", "Tokens"),
+            ("credits", "Credits"),
+            ("usd", "USD"),
+            ("blocked", "Blocked"),
+        ], args)
+        for name, path in paths.items():
+            print(f"{name}={path}")
+    return 0
+
+
 def command_doctor(args: argparse.Namespace) -> int:
     report_tz = resolve_timezone(getattr(args, "timezone", None))
     codex_home = Path(args.codex_home).expanduser()
     claude_home = Path(args.claude_home).expanduser()
     cursor_db = Path(args.cursor_db).expanduser()
+    cursor_state_db = Path(args.cursor_state_db).expanduser()
     output_dir = Path(args.output_dir).expanduser()
     redact = bool(getattr(args, "redact", False))
     sources = parse_source_filter(getattr(args, "sources", None))
@@ -2491,6 +2826,16 @@ def command_doctor(args: argparse.Namespace) -> int:
         else:
             line("FAIL", "Cursor parser", "no conversations parsed in the selected range")
             failures += 1
+
+        cursor_daily_stats = read_cursor_daily_stats(cursor_state_db)
+        if cursor_daily_stats:
+            line(
+                "OK",
+                "Cursor legacy daily stats",
+                f"{len(cursor_daily_stats)} daily rows from {cursor_daily_stats[0]['date']} to {cursor_daily_stats[-1]['date']}",
+            )
+        else:
+            line("WARN", "Cursor legacy daily stats", "no aiCodeTracking.dailyStats rows found")
 
     threads = codex_threads + claude_threads + cursor_threads
 
@@ -2882,6 +3227,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex-home", default=str(DEFAULT_CODEX_HOME), help="Codex data folder. Default: ~/.codex")
     parser.add_argument("--claude-home", default=str(DEFAULT_CLAUDE_HOME), help="Claude Code data folder. Default: ~/.claude")
     parser.add_argument("--cursor-db", default=str(DEFAULT_CURSOR_AI_DB), help="Cursor AI tracking SQLite DB. Default: ~/.cursor/ai-tracking/ai-code-tracking.db")
+    parser.add_argument("--cursor-state-db", default=str(DEFAULT_CURSOR_STATE_DB), help="Cursor global state SQLite DB used for legacy daily AI-code stats.")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Report output directory.")
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE), help="State file used to dedupe WakaTime heartbeats.")
     parser.add_argument("--days", type=int, default=None, help="Only include threads active in the last N days.")
@@ -2938,6 +3284,11 @@ def build_parser() -> argparse.ArgumentParser:
     source = subparsers.add_parser("source", help="Print app/source usage totals.")
     add_table_args(source, default_limit=20)
     source.set_defaults(func=command_source)
+
+    source_audit = subparsers.add_parser("source-audit", help="Audit every local and API source that can provide usage, cost, or time data.")
+    source_audit.add_argument("--format", choices=["table", "json", "markdown"], default="table")
+    source_audit.add_argument("--compact", action="store_true", help="Trim wide table cells for terminal use.")
+    source_audit.set_defaults(func=command_source_audit)
 
     sync = subparsers.add_parser("sync-wakatime", help="Send recent Codex app activity to WakaTime.")
     sync.add_argument("--wakatime-since-minutes", type=int, default=180)

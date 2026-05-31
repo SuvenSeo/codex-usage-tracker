@@ -281,8 +281,44 @@ class CodexUsageTrackerTests(unittest.TestCase):
             self.assertEqual(threads[0]["request_count"], 2)
             self.assertEqual(threads[0]["usage"]["total_tokens"], 0)
 
+    def test_cursor_daily_stats_reads_state_db(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "state.vscdb"
+            con = sqlite3.connect(db)
+            con.execute("create table ItemTable (key text, value text)")
+            con.execute(
+                "insert into ItemTable values (?, ?)",
+                (
+                    "aiCodeTracking.dailyStats.v1.5.2026-02-19",
+                    json.dumps({
+                        "date": "2026-02-19",
+                        "tabSuggestedLines": 4,
+                        "tabAcceptedLines": 2,
+                        "composerSuggestedLines": 100,
+                        "composerAcceptedLines": 80,
+                    }),
+                ),
+            )
+            con.commit()
+            con.close()
+
+            rows = tracker.read_cursor_daily_stats(db)
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["date"], "2026-02-19")
+            self.assertEqual(rows[0]["composer_suggested_lines"], 100)
+            self.assertEqual(rows[0]["composer_accepted_lines"], 80)
+
     def test_source_filter_accepts_all(self):
         self.assertEqual(tracker.parse_source_filter("all"), {"codex", "claude", "cursor"})
+
+    def test_source_audit_command_is_registered(self):
+        parser = tracker.build_parser()
+        args = parser.parse_args(["source-audit", "--format", "markdown"])
+
+        self.assertEqual(args.command, "source-audit")
+        self.assertEqual(args.format, "markdown")
+        self.assertIs(args.func, tracker.command_source_audit)
 
 
 if __name__ == "__main__":
