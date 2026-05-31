@@ -256,6 +256,93 @@ class CodexUsageTrackerTests(unittest.TestCase):
     def test_source_filter_accepts_all(self):
         self.assertEqual(tracker.parse_source_filter("all"), {"codex", "claude", "cursor"})
 
+    def test_rollout_missing_optional_fields_degrades_gracefully(self):
+        """Fixture: minimal log shape - no cached tokens, no cwd, no model."""
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / ".codex"
+            rollout_dir = codex_home / "sessions" / "2026" / "05" / "15"
+            rollout_dir.mkdir(parents=True)
+            rollout = rollout_dir / "rollout-2026-05-15T08-00-00-019minimal-0000-0000-0000-000000000001.jsonl"
+            rows = [
+                {
+                    "timestamp": "2026-05-15T08:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                    "id": "019minimal-0000-0000-0000-000000000001",
+                    # no "cwd" field - optional, should not crash
+                    "source": "codex_desktop",
+                    },
+                },
+                {
+                    "timestamp": "2026-05-15T08:00:10Z",
+                    "type": "event_msg",
+                    "payload": {
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 200,
+                            # no "cached_input_tokens" - optional
+                            "output_tokens": 30,
+                            # no "reasoning_output_tokens" - optional
+                            "total_tokens": 230,
+                            }
+                        }
+                    },
+                },
+            ]
+            rollout.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+            threads = tracker.load_threads(codex_home)
+            summary = tracker.aggregate_threads(threads)
+
+            self.assertEqual(len(threads), 1)
+            self.assertEqual(summary["usage"]["total_tokens"], 230)
+            # cached tokens absent - should default to zero, not crash
+            self.assertEqual(threads[0]["usage"].get("cached_input_tokens", 0), 0)
+
+    def test_rollout_no_turn_context_row_degrades_gracefully(self):
+        """Fixture: log shape missing turn_context entirely - model info absent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / ".codex"
+            rollout_dir = codex_home / "sessions" / "2026" / "05" / "20"
+            rollout_dir.mkdir(parents=True)
+            rollout = rollout_dir / "rollout-2026-05-20T09-00-00-019noturn-0000-0000-0000-000000000002.jsonl"
+            rows = [
+                {
+                    "timestamp": "2026-05-20T09:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                    "id": "019noturn-0000-0000-0000-000000000002",
+                    "cwd": "C:\\Projects\\no-turn-app",
+                    "source": "codex_desktop",
+                    },
+                },
+                # no "turn_context" row at all - model/effort fields absent
+                {
+                    "timestamp": "2026-05-20T09:00:10Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "info": {
+                            "total_token_usage": {
+                            "input_tokens": 500,
+                            "cached_input_tokens": 100,
+                            "output_tokens": 80,
+                            "reasoning_output_tokens": 0,
+                            "total_tokens": 580,
+                            }
+                        }
+                    },
+                },
+            ]
+            rollout.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+            threads = tracker.load_threads(codex_home)
+            summary = tracker.aggregate_threads(threads)
+
+            self.assertEqual(len(threads), 1)
+            self.assertEqual(threads[0]["project"], "no-turn-app")
+            self.assertEqual(summary["usage"]["total_tokens"], 580)
+            # model unknown when turn_context missing - should not crash, just be empty/unknown
+            self.assertIsNotNone(threads[0].get("model"))
+
 
 if __name__ == "__main__":
     unittest.main()
