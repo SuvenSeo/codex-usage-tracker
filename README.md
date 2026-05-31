@@ -129,6 +129,19 @@ The generated app is written to `dist\CodexUsageTracker.exe`. Double-clicking it
 opens the live GUI with Codex, Claude Code, and Cursor selected. It reads only
 local data folders on your machine.
 
+Install it as a normal user-level Windows app:
+
+```powershell
+.\scripts\install_windows_app.ps1
+```
+
+That copies the EXE to `%LOCALAPPDATA%\Programs\CodexUsageTracker` and creates
+Start Menu plus Desktop shortcuts. Remove it with:
+
+```powershell
+.\scripts\uninstall_windows_app.ps1
+```
+
 Try a safe public demo:
 
 ```bash
