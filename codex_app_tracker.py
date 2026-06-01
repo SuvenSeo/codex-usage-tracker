@@ -75,6 +75,28 @@ SOURCE_LABELS = {
     "demo": "Demo",
     "(unknown)": "(unknown)",
 }
+DARK_THEME = {
+    "mode": "dark",
+    "bg": "#101114",
+    "panel": "#181b20",
+    "panel_alt": "#20242b",
+    "field": "#111418",
+    "ink": "#f5f7fa",
+    "muted": "#a8b0bd",
+    "subtle": "#252b33",
+    "border": "#333a45",
+    "blue": "#58a6ff",
+    "green": "#36c58c",
+    "amber": "#f1b84b",
+    "rose": "#ff7b72",
+    "selected": "#2f81f7",
+}
+GUI_CHART_COLORS = {
+    "sources": "#a78bfa",
+    "daily": DARK_THEME["blue"],
+    "projects": DARK_THEME["green"],
+    "models": DARK_THEME["amber"],
+}
 
 # Rates verified against official OpenAI/Anthropic pages on 2026-05-31.
 # Codex credit estimates use the token-based Codex rate card. USD estimates are
@@ -1724,17 +1746,20 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
   <title>AI Coding Usage Dashboard</title>
   <style>
     :root {{
-      --bg: #f5f6f8;
-      --panel: #ffffff;
-      --ink: #151a22;
-      --muted: #667085;
-      --subtle: #eef1f4;
-      --border: #d7dce2;
-      --blue: #1f6feb;
-      --green: #1a7f64;
-      --amber: #b7791f;
-      --rose: #b42318;
-      --code: #24292f;
+      color-scheme: dark;
+      --bg: #101114;
+      --panel: #181b20;
+      --ink: #f5f7fa;
+      --muted: #a8b0bd;
+      --subtle: #252b33;
+      --border: #333a45;
+      --blue: #58a6ff;
+      --green: #36c58c;
+      --amber: #f1b84b;
+      --rose: #ff7b72;
+      --code: #d7e2ff;
+      --warning-bg: #302614;
+      --warning-ink: #f4d28f;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -1756,7 +1781,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       border: 1px solid var(--border);
       background: var(--panel);
       border-radius: 999px;
-      color: #344054;
+      color: var(--muted);
       font-size: 12px;
       padding: 5px 10px;
     }}
@@ -1808,17 +1833,17 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
     }}
     table {{ border-collapse: collapse; width: 100%; min-width: 900px; }}
     th, td {{ padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; font-size: 13px; }}
-    th {{ background: var(--subtle); color: #344054; font-weight: 650; position: sticky; top: 0; }}
+    th {{ background: var(--subtle); color: var(--ink); font-weight: 650; position: sticky; top: 0; }}
     tr:last-child td {{ border-bottom: 0; }}
-    .bar {{ width: 140px; height: 8px; background: #e4e7ec; border-radius: 999px; overflow: hidden; margin-top: 5px; }}
+    .bar {{ width: 140px; height: 8px; background: var(--subtle); border-radius: 999px; overflow: hidden; margin-top: 5px; }}
     .bar span {{ display: block; height: 100%; background: var(--blue); }}
     .empty {{ color: var(--muted); text-align: center; padding: 18px; }}
     .note {{
       margin-top: 24px;
       padding: 14px 16px;
       border-left: 4px solid var(--amber);
-      background: #fff8e6;
-      color: #58430d;
+      background: var(--warning-bg);
+      color: var(--warning-ink);
       border-radius: 6px;
       font-size: 13px;
     }}
@@ -2908,12 +2933,76 @@ def command_run(args: argparse.Namespace) -> int:
     return report_code
 
 
+def apply_dark_ttk_theme(root: Any, style: Any) -> None:
+    theme = DARK_THEME
+
+    def configure(style_name: str, **options: Any) -> None:
+        try:
+            style.configure(style_name, **options)
+        except Exception:
+            pass
+
+    def style_map(style_name: str, **options: Any) -> None:
+        try:
+            style.map(style_name, **options)
+        except Exception:
+            pass
+
+    try:
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+    except Exception:
+        pass
+
+    try:
+        root.configure(bg=theme["bg"])
+    except Exception:
+        pass
+
+    configure(".", background=theme["bg"], foreground=theme["ink"])
+    configure("TFrame", background=theme["bg"])
+    configure("TLabel", background=theme["bg"], foreground=theme["ink"])
+    configure("TButton", background=theme["subtle"], foreground=theme["ink"], borderwidth=1)
+    style_map(
+        "TButton",
+        background=[("pressed", theme["border"]), ("active", theme["panel_alt"])],
+        foreground=[("disabled", theme["muted"])],
+    )
+    configure("TCheckbutton", background=theme["bg"], foreground=theme["ink"])
+    style_map(
+        "TCheckbutton",
+        background=[("active", theme["bg"])],
+        foreground=[("disabled", theme["muted"])],
+    )
+    configure("TEntry", fieldbackground=theme["field"], foreground=theme["ink"])
+    configure("TNotebook", background=theme["bg"], borderwidth=0)
+    configure("TNotebook.Tab", background=theme["subtle"], foreground=theme["muted"], padding=(12, 6))
+    style_map(
+        "TNotebook.Tab",
+        background=[("selected", theme["panel"]), ("active", theme["panel_alt"])],
+        foreground=[("selected", theme["ink"]), ("active", theme["ink"])],
+    )
+    configure("TLabelframe", background=theme["bg"], foreground=theme["ink"], bordercolor=theme["border"])
+    configure("TLabelframe.Label", background=theme["bg"], foreground=theme["muted"])
+    configure(
+        "Treeview",
+        background=theme["panel"],
+        fieldbackground=theme["panel"],
+        foreground=theme["ink"],
+        bordercolor=theme["border"],
+        rowheight=24,
+    )
+    configure("Treeview.Heading", background=theme["subtle"], foreground=theme["ink"], bordercolor=theme["border"])
+    style_map("Treeview", background=[("selected", theme["selected"])], foreground=[("selected", "#ffffff")])
+
+
 class CodexUsageTrackerGui:
     def __init__(self, args: argparse.Namespace, tk: Any, ttk: Any, messagebox: Any) -> None:
         self.args = args
         self.tk = tk
         self.ttk = ttk
         self.messagebox = messagebox
+        self.theme = DARK_THEME
         self.refresh_seconds = validate_refresh_seconds(int(args.refresh_seconds))
         self.events: queue.Queue[tuple[Any, ...]] = queue.Queue()
         self.worker_running = False
@@ -2949,8 +3038,7 @@ class CodexUsageTrackerGui:
 
         try:
             style = ttk.Style()
-            if "vista" in style.theme_names():
-                style.theme_use("vista")
+            apply_dark_ttk_theme(self.root, style)
         except Exception:
             pass
 
@@ -2959,10 +3047,15 @@ class CodexUsageTrackerGui:
 
         header = ttk.Frame(container)
         header.pack(fill="x")
-        ttk.Label(header, text="AI Coding Usage Tracker", font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        ttk.Label(header, textvariable=self.header_var, foreground="#475467").pack(anchor="w", pady=(4, 0))
-        ttk.Label(header, textvariable=self.pricing_var, foreground="#667085").pack(anchor="w", pady=(4, 0))
-        ttk.Label(header, textvariable=self.status_var, foreground="#344054").pack(anchor="w", pady=(4, 0))
+        ttk.Label(
+            header,
+            text="AI Coding Usage Tracker",
+            font=("Segoe UI", 18, "bold"),
+            foreground=self.theme["ink"],
+        ).pack(anchor="w")
+        ttk.Label(header, textvariable=self.header_var, foreground=self.theme["muted"]).pack(anchor="w", pady=(4, 0))
+        ttk.Label(header, textvariable=self.pricing_var, foreground=self.theme["muted"]).pack(anchor="w", pady=(4, 0))
+        ttk.Label(header, textvariable=self.status_var, foreground=self.theme["green"]).pack(anchor="w", pady=(4, 0))
 
         controls = ttk.Frame(container)
         controls.pack(fill="x", pady=(14, 10))
@@ -3002,10 +3095,10 @@ class CodexUsageTrackerGui:
 
         overview = ttk.Frame(notebook, padding=10)
         notebook.add(overview, text="Overview")
-        self.add_chart(overview, "sources", "Apps", "#7c3aed")
-        self.add_chart(overview, "daily", "Daily Tokens", "#1f6feb")
-        self.add_chart(overview, "projects", "Top Projects", "#1a7f64")
-        self.add_chart(overview, "models", "Top Models", "#b7791f")
+        self.add_chart(overview, "sources", "Apps", GUI_CHART_COLORS["sources"])
+        self.add_chart(overview, "daily", "Daily Tokens", GUI_CHART_COLORS["daily"])
+        self.add_chart(overview, "projects", "Top Projects", GUI_CHART_COLORS["projects"])
+        self.add_chart(overview, "models", "Top Models", GUI_CHART_COLORS["models"])
 
         table_specs = {
             "sources": "Apps",
@@ -3022,7 +3115,13 @@ class CodexUsageTrackerGui:
     def add_chart(self, parent: Any, key: str, title: str, color: str) -> None:
         frame = self.ttk.LabelFrame(parent, text=title, padding=8)
         frame.pack(fill="both", expand=True, pady=(0, 8))
-        canvas = self.tk.Canvas(frame, height=155, bg="#ffffff", highlightthickness=1, highlightbackground="#d7dce2")
+        canvas = self.tk.Canvas(
+            frame,
+            height=155,
+            bg=self.theme["panel"],
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
         canvas.pack(fill="both", expand=True)
         canvas.chart_color = color
         self.chart_canvases[key] = canvas
@@ -3161,7 +3260,7 @@ class CodexUsageTrackerGui:
         width = max(int(canvas.winfo_width() or 0), 520)
         height = max(int(canvas.winfo_height() or 0), 140)
         if not rows:
-            canvas.create_text(width / 2, height / 2, text="No data in this range.", fill="#667085")
+            canvas.create_text(width / 2, height / 2, text="No data in this range.", fill=self.theme["muted"])
             return
 
         max_value = max([int(row["value"]) for row in rows] or [1])
@@ -3178,12 +3277,19 @@ class CodexUsageTrackerGui:
                 label = label[:21] + "..."
             value = int(row["value"])
             filled = max(2, int((value / max_value) * bar_width))
-            canvas.create_text(12, y + 8, text=label, anchor="w", fill="#344054")
-            canvas.create_rectangle(label_width, y + 2, label_width + bar_width, y + 14, fill="#eef1f4", outline="")
+            canvas.create_text(12, y + 8, text=label, anchor="w", fill=self.theme["muted"])
+            canvas.create_rectangle(
+                label_width,
+                y + 2,
+                label_width + bar_width,
+                y + 14,
+                fill=self.theme["subtle"],
+                outline="",
+            )
             canvas.create_rectangle(label_width, y + 2, label_width + filled, y + 14, fill=color, outline="")
             detail = str(row.get("detail") or "")
             value_text = number(value) + (f" | {detail}" if detail else "")
-            canvas.create_text(label_width + bar_width + 12, y + 8, text=value_text, anchor="w", fill="#151a22")
+            canvas.create_text(label_width + bar_width + 12, y + 8, text=value_text, anchor="w", fill=self.theme["ink"])
 
     def apply_filter(self) -> None:
         query = self.search_var.get().strip().lower()

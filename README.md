@@ -111,8 +111,8 @@ codex-usage-tracker --sources all --days 7 --timezone Asia/Colombo gui
 ```
 
 The GUI uses Python's built-in Tkinter toolkit, polls selected local sources every 10
-seconds by default, and includes a button to generate the normal `out/`
-HTML/CSV/JSON reports. Change the interval with:
+seconds by default, opens in dark mode by default, and includes a button to
+generate the normal `out/` HTML/CSV/JSON reports. Change the interval with:
 
 ```bash
 codex-usage-tracker gui --refresh-seconds 5

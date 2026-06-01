@@ -162,6 +162,22 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertEqual(model["token_delta"], "")
         self.assertEqual(model["pricing"]["source_date"], tracker.PRICING_SOURCE_DATE)
 
+    def test_dashboard_html_uses_dark_theme_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            threads = tracker.demo_threads()
+            summary = tracker.aggregate_threads(threads)
+            paths = tracker.write_reports(threads, summary, Path(tmp))
+            dashboard = paths["dashboard_html"].read_text(encoding="utf-8")
+
+        self.assertIn("color-scheme: dark", dashboard)
+        self.assertIn("--bg: #101114", dashboard)
+        self.assertIn("--panel: #181b20", dashboard)
+
+    def test_gui_theme_is_dark_default(self):
+        self.assertEqual(tracker.DARK_THEME["mode"], "dark")
+        self.assertEqual(tracker.DARK_THEME["bg"], "#101114")
+        self.assertEqual(tracker.GUI_CHART_COLORS["daily"], tracker.DARK_THEME["blue"])
+
     def test_gui_view_model_uses_shared_privacy_path(self):
         threads = tracker.apply_privacy(tracker.demo_threads(), redact=True, hash_projects=True)
         summary = tracker.aggregate_threads(threads)
@@ -319,6 +335,88 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertEqual(args.command, "source-audit")
         self.assertEqual(args.format, "markdown")
         self.assertIs(args.func, tracker.command_source_audit)
+
+    def test_rollout_missing_optional_fields_degrades_gracefully(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / ".codex"
+            rollout_dir = codex_home / "sessions" / "2026" / "05" / "15"
+            rollout_dir.mkdir(parents=True)
+            rollout = rollout_dir / "rollout-2026-05-15T08-00-00-019minimal-0000-0000-0000-000000000001.jsonl"
+            rows = [
+                {
+                    "timestamp": "2026-05-15T08:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "019minimal-0000-0000-0000-000000000001",
+                        "source": "codex_desktop",
+                    },
+                },
+                {
+                    "timestamp": "2026-05-15T08:00:10Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "info": {
+                            "total_token_usage": {
+                                "input_tokens": 200,
+                                "output_tokens": 30,
+                                "total_tokens": 230,
+                            }
+                        }
+                    },
+                },
+            ]
+            rollout.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+            threads = tracker.load_threads(codex_home)
+            summary = tracker.aggregate_threads(threads)
+
+            self.assertEqual(len(threads), 1)
+            self.assertEqual(threads[0]["project"], "(unknown)")
+            self.assertEqual(threads[0]["usage"]["cached_input_tokens"], 0)
+            self.assertEqual(threads[0]["usage"]["reasoning_output_tokens"], 0)
+            self.assertEqual(summary["usage"]["total_tokens"], 230)
+
+    def test_rollout_no_turn_context_row_degrades_gracefully(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / ".codex"
+            rollout_dir = codex_home / "sessions" / "2026" / "05" / "20"
+            rollout_dir.mkdir(parents=True)
+            rollout = rollout_dir / "rollout-2026-05-20T09-00-00-019noturn-0000-0000-0000-000000000002.jsonl"
+            rows = [
+                {
+                    "timestamp": "2026-05-20T09:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "019noturn-0000-0000-0000-000000000002",
+                        "cwd": "C:\\Projects\\no-turn-app",
+                        "source": "codex_desktop",
+                    },
+                },
+                {
+                    "timestamp": "2026-05-20T09:00:10Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "info": {
+                            "total_token_usage": {
+                                "input_tokens": 500,
+                                "cached_input_tokens": 100,
+                                "output_tokens": 80,
+                                "reasoning_output_tokens": 0,
+                                "total_tokens": 580,
+                            }
+                        }
+                    },
+                },
+            ]
+            rollout.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+            threads = tracker.load_threads(codex_home)
+            summary = tracker.aggregate_threads(threads)
+
+            self.assertEqual(len(threads), 1)
+            self.assertEqual(threads[0]["project"], "no-turn-app")
+            self.assertEqual(threads[0]["model"], "")
+            self.assertEqual(summary["usage"]["total_tokens"], 580)
 
 
 if __name__ == "__main__":
