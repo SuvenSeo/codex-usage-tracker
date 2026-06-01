@@ -10,19 +10,27 @@ WakaTime "ai coding" heartbeats for recent Codex app activity.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import hashlib
 import html
+import http.server
 import json
+import mimetypes
 import os
 import queue
 import re
 import shutil
+import socketserver
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1377,6 +1385,8 @@ def build_gui_view_model(
     top_project = summary["projects"][0]["project"] if summary["projects"] else "(none)"
     top_app = summary["sources"][0]["app"] if summary.get("sources") else "(none)"
     top_model = summary["models"][0]["model"] if summary["models"] else "(none)"
+    alerts = summary.get("alerts") or build_usage_alerts(summary)
+    billing_connectors = summary.get("billing_connectors") or build_billing_connectors(fetch=False)
 
     daily_rows = [
         (
@@ -1471,6 +1481,8 @@ def build_gui_view_model(
         "token_delta": "" if token_delta is None else f"{token_delta:+,}",
         "total_tokens": total_tokens,
         "pricing": summary.get("pricing") or pricing_metadata(),
+        "alerts": alerts,
+        "billing_connectors": billing_connectors,
         "metrics": [
             ("Threads", number(summary["thread_count"])),
             ("Apps", number(len(summary.get("sources", [])))),
@@ -1485,6 +1497,8 @@ def build_gui_view_model(
             ("Top model", top_model),
             ("Cache hit rate", percent(cache_hit_rate(summary["usage"]))),
             ("Output share", percent(output_ratio(summary["usage"]))),
+            ("Budget alerts", number(sum(1 for alert in alerts if alert.get("severity") in {"risk", "warn"}))),
+            ("Billing connectors", number(sum(1 for row in billing_connectors if row.get("status") in {"configured", "fetched"}))),
         ],
         "charts": {
             "sources": [
@@ -1581,6 +1595,35 @@ def build_gui_view_model(
                     ("active", "Active min"),
                 ),
                 "rows": thread_rows,
+            },
+            "alerts": {
+                "columns": (
+                    ("severity", "Severity"),
+                    ("title", "Signal"),
+                    ("detail", "Detail"),
+                ),
+                "rows": tuple((alert.get("severity", ""), alert.get("title", ""), alert.get("detail", "")) for alert in alerts),
+            },
+            "billing": {
+                "columns": (
+                    ("provider", "Provider"),
+                    ("status", "Status"),
+                    ("period", "Period"),
+                    ("official_usd", "Official USD"),
+                    ("env_var", "Env var"),
+                    ("blocked", "Blocked"),
+                ),
+                "rows": tuple(
+                    (
+                        row.get("provider", ""),
+                        row.get("status", ""),
+                        row.get("period", ""),
+                        str(row.get("official_usd", "")),
+                        row.get("env_var", ""),
+                        row.get("blocked", ""),
+                    )
+                    for row in billing_connectors
+                ),
             },
         },
     }
@@ -1713,6 +1756,63 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
         for row in model_rows
     ) or empty_row(10)
 
+    trend_rows = daily_rows[-14:]
+    max_trend_tokens = max([usage_total(row["usage"]) for row in trend_rows] or [1])
+    trend_html = "\n".join(
+        (
+            '<div class="trend-row">'
+            f'<span>{html.escape(row["date"])}</span>'
+            '<div class="trend-track">'
+            f'<i style="width:{max(4, usage_total(row["usage"]) / max_trend_tokens * 100):.1f}%"></i>'
+            '</div>'
+            f'<strong>{number(usage_total(row["usage"]))}</strong>'
+            '</div>'
+        )
+        for row in trend_rows
+    ) or '<p class="empty-copy">No trend data in this range.</p>'
+
+    alerts = summary.get("alerts") or build_usage_alerts(summary)
+    alert_html = "\n".join(
+        (
+            f'<div class="signal signal-{html.escape(alert.get("severity", "info"))}">'
+            f'<strong>{html.escape(alert.get("title", ""))}</strong>'
+            f'<span>{html.escape(alert.get("detail", ""))}</span>'
+            '</div>'
+        )
+        for alert in alerts
+    )
+
+    def provider_slug(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "provider"
+
+    provider_buttons = "\n".join(
+        f'<button class="tab-button{" is-active" if index == 0 else ""}" type="button" data-provider-tab="{provider_slug(row["app"])}">{html.escape(row["app"])}</button>'
+        for index, row in enumerate(source_rows)
+    )
+    provider_cards = "\n".join(
+        (
+            f'<article class="provider-card{" is-active" if index == 0 else ""}" data-provider-card="{provider_slug(row["app"])}">'
+            f'<span>{html.escape(row["app"])}</span>'
+            f'<strong>{number(usage_total(row["usage"]))} tokens</strong>'
+            f'<p>{number(row["thread_count"])} threads, {number(row.get("request_count", 0))} requests, {minutes(row["active_seconds"])} active minutes.</p>'
+            f'<p>Estimated USD: ${number(row["estimated_api_usd_equiv"])}. Estimated Codex credits: {number(row["estimated_codex_credits"])}.</p>'
+            '</article>'
+        )
+        for index, row in enumerate(source_rows)
+    ) or '<p class="empty-copy">No provider data in this range.</p>'
+
+    connector_rows = summary.get("billing_connectors") or build_billing_connectors(fetch=False)
+    connector_html = "\n".join(
+        (
+            '<div class="connector-row">'
+            f'<span>{html.escape(row.get("provider", ""))}</span>'
+            f'<strong>{html.escape(row.get("status", ""))}</strong>'
+            f'<em>{html.escape(row.get("env_var", ""))}</em>'
+            '</div>'
+        )
+        for row in connector_rows
+    )
+
     thread_html = "\n".join(
         tr([
             html.escape(app_label(thread_app(thread))),
@@ -1737,7 +1837,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
     top_app = source_rows[0]["app"] if source_rows else "(none)"
     top_model = summary["models"][0]["model"] if summary["models"] else "(none)"
     pricing = summary.get("pricing") or pricing_metadata()
-    repo_url = "https://github.com/SuvenSeo/codex-usage-tracker"
+    repo_url = "https://github.com/SuvenSeo/ai-coding-usage-tracker"
     html_doc = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1762,14 +1862,18 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       --warning-ink: #f4d28f;
     }}
     * {{ box-sizing: border-box; }}
+    html {{ scroll-behavior: smooth; }}
     body {{
       margin: 0;
       font-family: Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: var(--bg);
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, #08090d 0%, var(--bg) 42%, #0d1117 100%);
       color: var(--ink);
       line-height: 1.45;
+      overflow-x: hidden;
     }}
-    header, main, footer {{ max-width: 1280px; margin: 0 auto; padding: 24px; }}
+    header, main, footer {{ width: min(100%, 1280px); margin: 0 auto; padding: 24px; }}
     header {{ padding-top: 34px; }}
     .eyebrow {{
       display: flex;
@@ -1779,15 +1883,23 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
     }}
     .pill {{
       border: 1px solid var(--border);
-      background: var(--panel);
+      background: color-mix(in srgb, var(--panel) 78%, transparent);
       border-radius: 999px;
       color: var(--muted);
       font-size: 12px;
       padding: 5px 10px;
+      transition: border-color 180ms ease, color 180ms ease, transform 180ms ease;
+      backdrop-filter: blur(16px);
+    }}
+    .pill:hover {{
+      border-color: var(--blue);
+      color: var(--ink);
+      transform: translateY(-1px);
     }}
     h1 {{ margin: 0; font-size: 32px; letter-spacing: 0; }}
     h2 {{ margin: 28px 0 12px; font-size: 18px; letter-spacing: 0; }}
-    p {{ color: var(--muted); margin: 6px 0 0; max-width: 760px; }}
+    p {{ color: var(--muted); margin: 6px 0 0; max-width: 760px; overflow-wrap: anywhere; }}
+    section, .metrics, .insights, .toolbar, .panel {{ min-width: 0; }}
     .metrics, .insights {{
       display: grid;
       gap: 12px;
@@ -1796,12 +1908,39 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
     .metrics {{ grid-template-columns: repeat(5, minmax(0, 1fr)); }}
     .insights {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
     .metric, .insight {{
-      background: var(--panel);
+      position: relative;
+      overflow: hidden;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,0.055), rgba(255,255,255,0.014)),
+        var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 14px;
       min-height: 92px;
+      box-shadow: 0 18px 44px rgba(0,0,0,0.24);
+      animation: card-rise 420ms cubic-bezier(.2,.8,.2,1) both;
+      transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
     }}
+    .metric::before, .insight::before {{
+      content: "";
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.34), transparent);
+      opacity: .72;
+    }}
+    .metric:hover, .insight:hover {{
+      border-color: color-mix(in srgb, var(--blue) 45%, var(--border));
+      box-shadow: 0 24px 58px rgba(0,0,0,0.34);
+      transform: translateY(-2px);
+    }}
+    .metric:nth-child(2), .insight:nth-child(2) {{ animation-delay: 35ms; }}
+    .metric:nth-child(3), .insight:nth-child(3) {{ animation-delay: 70ms; }}
+    .metric:nth-child(4), .insight:nth-child(4) {{ animation-delay: 105ms; }}
+    .metric:nth-child(5), .insight:nth-child(5) {{ animation-delay: 140ms; }}
+    .metric:nth-child(6) {{ animation-delay: 175ms; }}
+    .metric:nth-child(7) {{ animation-delay: 210ms; }}
+    .metric:nth-child(8) {{ animation-delay: 245ms; }}
     .metric span, .insight span {{ display: block; color: var(--muted); font-size: 12px; }}
     .metric strong {{ display: block; margin-top: 8px; font-size: 22px; }}
     .insight strong {{ display: block; margin-top: 8px; font-size: 17px; overflow-wrap: anywhere; }}
@@ -1809,34 +1948,195 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
     .metric:nth-child(3) strong {{ color: var(--green); }}
     .metric:nth-child(4) strong {{ color: var(--amber); }}
     .metric:nth-child(5) strong {{ color: var(--rose); }}
+    .feature-grid {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr);
+      gap: 14px;
+      margin: 26px 0 18px;
+    }}
+    .feature-panel {{
+      background: linear-gradient(145deg, rgba(255,255,255,0.05), rgba(255,255,255,0.012)), var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 18px 44px rgba(0,0,0,0.22);
+    }}
+    .feature-panel h2 {{ margin-top: 0; }}
+    .trend-row {{
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr) 96px;
+      align-items: center;
+      gap: 10px;
+      min-height: 28px;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .trend-row strong {{ color: var(--ink); text-align: right; }}
+    .trend-track {{ height: 8px; border-radius: 999px; background: var(--subtle); overflow: hidden; }}
+    .trend-track i {{
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--blue), var(--green));
+      animation: bar-fill 720ms cubic-bezier(.2,.8,.2,1) both;
+      transform-origin: left center;
+    }}
+    .signal {{
+      display: grid;
+      gap: 4px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border);
+    }}
+    .signal:last-child {{ border-bottom: 0; }}
+    .signal strong {{ font-size: 13px; }}
+    .signal span {{ color: var(--muted); font-size: 12px; }}
+    .signal-risk strong {{ color: var(--rose); }}
+    .signal-warn strong {{ color: var(--amber); }}
+    .signal-ok strong {{ color: var(--green); }}
+    .signal-info strong {{ color: var(--blue); }}
+    .provider-tabs {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 4px 0 12px;
+    }}
+    .tab-button {{
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      padding: 7px 11px;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+    }}
+    .tab-button:hover, .tab-button.is-active {{
+      background: var(--panel_alt);
+      border-color: var(--blue);
+      color: var(--ink);
+      transform: translateY(-1px);
+    }}
+    .provider-card {{ display: none; }}
+    .provider-card.is-active {{ display: block; }}
+    .provider-card span, .provider-card p {{ color: var(--muted); }}
+    .provider-card strong {{ display: block; margin: 4px 0 6px; font-size: 22px; }}
+    .connector-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }}
+    .connector-row {{
+      display: grid;
+      gap: 4px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 11px;
+      background: rgba(255,255,255,0.018);
+    }}
+    .connector-row span {{ color: var(--muted); font-size: 12px; }}
+    .connector-row strong {{ font-size: 15px; }}
+    .connector-row em {{ color: var(--code); font-style: normal; font-size: 12px; overflow-wrap: anywhere; }}
+    .empty-copy {{ color: var(--muted); }}
     .toolbar {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
       margin: 24px 0 8px;
+      padding: 12px 0;
+      background: rgba(16,17,20,0.82);
+      backdrop-filter: blur(22px);
+    }}
+    .toolbar h2 {{ margin: 0; }}
+    .search-wrap {{
+      display: grid;
+      grid-template-columns: minmax(220px, 420px) auto;
+      gap: 8px;
+      align-items: center;
+      width: min(520px, 100%);
     }}
     .search {{
-      width: min(420px, 100%);
       border: 1px solid var(--border);
       border-radius: 7px;
       background: var(--panel);
       color: var(--ink);
       font: inherit;
       padding: 10px 12px;
+      transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+    }}
+    .search:focus {{
+      outline: 0;
+      border-color: var(--blue);
+      background: var(--field);
+      box-shadow: 0 0 0 4px rgba(88,166,255,0.16);
+    }}
+    .clear-search {{
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+      transition: border-color 160ms ease, color 160ms ease, transform 160ms ease;
+    }}
+    .clear-search:hover {{
+      border-color: var(--rose);
+      color: var(--ink);
+      transform: translateY(-1px);
+    }}
+    .search-status {{
+      grid-column: 1 / -1;
+      color: var(--muted);
+      font-size: 12px;
+      min-height: 18px;
+    }}
+    .table-nav {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 0 18px;
+    }}
+    .table-nav a {{
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--code);
+      font-size: 12px;
+      font-weight: 650;
+      padding: 7px 11px;
+      text-decoration: none;
+      transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+    }}
+    .table-nav a:hover {{
+      background: var(--panel_alt);
+      border-color: var(--blue);
+      transform: translateY(-1px);
     }}
     .panel {{
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
       overflow: auto;
+      max-width: 100%;
+      box-shadow: 0 18px 44px rgba(0,0,0,0.2);
+      transition: border-color 180ms ease, box-shadow 180ms ease;
     }}
+    .panel:hover {{ border-color: #465160; box-shadow: 0 22px 52px rgba(0,0,0,0.28); }}
     table {{ border-collapse: collapse; width: 100%; min-width: 900px; }}
     th, td {{ padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; font-size: 13px; }}
     th {{ background: var(--subtle); color: var(--ink); font-weight: 650; position: sticky; top: 0; }}
+    tr {{ transition: background 140ms ease; }}
+    tbody tr:hover td {{ background: rgba(88,166,255,0.07); }}
     tr:last-child td {{ border-bottom: 0; }}
     .bar {{ width: 140px; height: 8px; background: var(--subtle); border-radius: 999px; overflow: hidden; margin-top: 5px; }}
-    .bar span {{ display: block; height: 100%; background: var(--blue); }}
+    .bar span {{
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, var(--blue), var(--green));
+      animation: bar-fill 720ms cubic-bezier(.2,.8,.2,1) both;
+      transform-origin: left center;
+    }}
     .empty {{ color: var(--muted); text-align: center; padding: 18px; }}
     .note {{
       margin-top: 24px;
@@ -1853,15 +2153,36 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       padding-bottom: 36px;
     }}
     footer a {{ color: var(--code); font-weight: 650; text-decoration: none; }}
+    @keyframes card-rise {{
+      from {{ opacity: .82; transform: translateY(8px); }}
+      to {{ opacity: 1; transform: translateY(0); }}
+    }}
+    @keyframes bar-fill {{
+      from {{ transform: scaleX(.12); opacity: .55; }}
+      to {{ transform: scaleX(1); opacity: 1; }}
+    }}
     @media (max-width: 980px) {{
       header, main, footer {{ padding: 16px; }}
       .metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .insights {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .feature-grid {{ grid-template-columns: 1fr; }}
+      .connector-grid {{ grid-template-columns: 1fr; }}
       .toolbar {{ align-items: flex-start; flex-direction: column; }}
+      .search-wrap {{ width: 100%; }}
     }}
     @media (max-width: 560px) {{
+      header, main, footer {{ width: 100vw; max-width: 100vw; }}
       .metrics, .insights {{ grid-template-columns: 1fr; }}
       h1 {{ font-size: 26px; }}
+      .search-wrap {{ grid-template-columns: 1fr auto; }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      html {{ scroll-behavior: auto; }}
+      *, *::before, *::after {{
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 1ms !important;
+      }}
     }}
   </style>
 </head>
@@ -1895,11 +2216,44 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
     </section>
   </header>
   <main>
+    <section class="feature-grid" aria-label="Usage insights and budget signals">
+      <div class="feature-panel">
+        <h2>Recent Usage Trend</h2>
+        <div>{trend_html}</div>
+      </div>
+      <div class="feature-panel">
+        <h2>Budget & Signals</h2>
+        <div>{alert_html}</div>
+      </div>
+    </section>
+    <section class="feature-panel" id="providers">
+      <h2>Provider Comparison</h2>
+      <div class="provider-tabs" role="tablist" aria-label="Provider comparison">
+        {provider_buttons}
+      </div>
+      {provider_cards}
+    </section>
+    <section class="feature-panel" id="billing-connectors">
+      <h2>Official Billing Connectors</h2>
+      <div class="connector-grid">{connector_html}</div>
+    </section>
     <div class="toolbar">
       <h2>Usage Tables</h2>
-      <input class="search" id="table-search" type="search" placeholder="Filter tables by project, model, title, or date">
+      <div class="search-wrap">
+        <input class="search" id="table-search" type="search" placeholder="Filter tables by project, model, title, or date">
+        <button class="clear-search" id="clear-search" type="button" aria-label="Clear search" hidden>&times;</button>
+        <span class="search-status" id="search-status"></span>
+      </div>
     </div>
-    <section>
+    <nav class="table-nav" aria-label="Usage table sections">
+      <a href="#apps">Apps</a>
+      <a href="#daily">Daily</a>
+      <a href="#projects">Projects</a>
+      <a href="#models">Models</a>
+      <a href="#threads">Threads</a>
+      <a href="#providers">Providers</a>
+    </nav>
+    <section id="apps">
       <h2>Apps</h2>
       <div class="panel">
         <table data-filterable>
@@ -1908,7 +2262,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
         </table>
       </div>
     </section>
-    <section>
+    <section id="daily">
       <h2>Daily Usage</h2>
       <div class="panel">
         <table data-filterable>
@@ -1917,7 +2271,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
         </table>
       </div>
     </section>
-    <section>
+    <section id="projects">
       <h2>Projects</h2>
       <div class="panel">
         <table data-filterable>
@@ -1926,7 +2280,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
         </table>
       </div>
     </section>
-    <section>
+    <section id="models">
       <h2>Models</h2>
       <div class="panel">
         <table data-filterable>
@@ -1935,7 +2289,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
         </table>
       </div>
     </section>
-    <section>
+    <section id="threads">
       <h2>Most Expensive Threads</h2>
       <div class="panel">
         <table data-filterable>
@@ -1953,13 +2307,43 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
   </footer>
   <script>
     const search = document.getElementById("table-search");
+    const clearSearch = document.getElementById("clear-search");
+    const searchStatus = document.getElementById("search-status");
     const rows = Array.from(document.querySelectorAll("table[data-filterable] tbody tr"));
-    search.addEventListener("input", () => {{
+    const dataRows = rows.filter((row) => !row.querySelector(".empty"));
+    function applyTableFilter() {{
       const query = search.value.trim().toLowerCase();
+      let shown = 0;
       rows.forEach((row) => {{
-        row.hidden = query && !row.textContent.toLowerCase().includes(query);
+        const visible = !query || row.textContent.toLowerCase().includes(query);
+        row.hidden = !visible;
+        if (visible && !row.querySelector(".empty")) {{
+          shown += 1;
+        }}
+      }});
+      clearSearch.hidden = !query;
+      searchStatus.textContent = query
+        ? "Showing " + shown.toLocaleString() + " matching rows"
+        : "Showing all " + dataRows.length.toLocaleString() + " rows";
+    }}
+    search.addEventListener("input", applyTableFilter);
+    clearSearch.addEventListener("click", () => {{
+      search.value = "";
+      search.focus();
+      applyTableFilter();
+    }});
+    const providerTabs = Array.from(document.querySelectorAll("[data-provider-tab]"));
+    const providerCards = Array.from(document.querySelectorAll("[data-provider-card]"));
+    providerTabs.forEach((tab) => {{
+      tab.addEventListener("click", () => {{
+        const provider = tab.dataset.providerTab;
+        providerTabs.forEach((item) => item.classList.toggle("is-active", item === tab));
+        providerCards.forEach((card) => {{
+          card.classList.toggle("is-active", card.dataset.providerCard === provider);
+        }});
       }});
     }});
+    applyTableFilter();
   </script>
 </body>
 </html>
@@ -2084,6 +2468,271 @@ def find_wakatime_cli() -> str | None:
 
 def env_present(*names: str) -> bool:
     return any(bool(os.environ.get(name)) for name in names)
+
+
+def parse_positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("budget must be a number") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("budget must be zero or greater")
+    return parsed
+
+
+def budget_options(args: argparse.Namespace | None) -> dict[str, float]:
+    if args is None:
+        return {}
+    return {
+        "daily_tokens": float(getattr(args, "daily_token_budget", 0.0) or 0.0),
+        "daily_usd": float(getattr(args, "daily_usd_budget", 0.0) or 0.0),
+        "monthly_tokens": float(getattr(args, "monthly_token_budget", 0.0) or 0.0),
+        "monthly_usd": float(getattr(args, "monthly_usd_budget", 0.0) or 0.0),
+    }
+
+
+def build_usage_alerts(summary: dict[str, Any], budgets: dict[str, float] | None = None) -> list[dict[str, str]]:
+    budgets = budgets or {}
+    alerts: list[dict[str, str]] = []
+    daily = list(summary.get("daily") or [])
+    latest_daily = daily[-1] if daily else None
+    latest_tokens = usage_total(latest_daily["usage"]) if latest_daily else 0
+    latest_usd = float(latest_daily.get("estimated_api_usd_equiv") or 0.0) if latest_daily else 0.0
+    latest_date = latest_daily.get("date", "latest day") if latest_daily else "latest day"
+
+    month_prefix = str(latest_date)[:7] if latest_daily else ""
+    month_rows = [row for row in daily if str(row.get("date", "")).startswith(month_prefix)] if month_prefix else daily
+    month_tokens = sum(usage_total(row["usage"]) for row in month_rows)
+    month_usd = sum(float(row.get("estimated_api_usd_equiv") or 0.0) for row in month_rows)
+
+    def add_budget_alert(label: str, actual: float, budget: float, unit: str) -> None:
+        if budget <= 0:
+            return
+        ratio = actual / budget if budget else 0.0
+        severity = "risk" if ratio >= 1.0 else "warn" if ratio >= 0.8 else "ok"
+        if unit == "tokens":
+            actual_text = number(int(actual))
+            budget_text = number(int(budget))
+        else:
+            actual_text = "$" + number(actual)
+            budget_text = "$" + number(budget)
+        alerts.append({
+            "severity": severity,
+            "title": label,
+            "detail": f"{actual_text} of {budget_text} ({percent(ratio * 100.0)})",
+        })
+
+    add_budget_alert(f"{latest_date} token budget", float(latest_tokens), budgets.get("daily_tokens", 0.0), "tokens")
+    add_budget_alert(f"{latest_date} USD budget", latest_usd, budgets.get("daily_usd", 0.0), "usd")
+    add_budget_alert(f"{month_prefix or 'Selected range'} token budget", float(month_tokens), budgets.get("monthly_tokens", 0.0), "tokens")
+    add_budget_alert(f"{month_prefix or 'Selected range'} USD budget", month_usd, budgets.get("monthly_usd", 0.0), "usd")
+
+    total_tokens = usage_total(summary.get("usage") or {})
+    if total_tokens > 0 and cache_hit_rate(summary["usage"]) < 20.0:
+        alerts.append({
+            "severity": "warn",
+            "title": "Low cache reuse",
+            "detail": "Cache hit rate is below 20%; repeated large-context work may be costing more than needed.",
+        })
+    if total_tokens > 0 and output_ratio(summary["usage"]) > 35.0:
+        alerts.append({
+            "severity": "warn",
+            "title": "High output share",
+            "detail": "Output tokens are a large share of usage; long generated artifacts may be driving cost.",
+        })
+    if not env_present("OPENAI_ADMIN_KEY", "ANTHROPIC_ADMIN_KEY", "CURSOR_ADMIN_API_KEY"):
+        alerts.append({
+            "severity": "info",
+            "title": "Official billing not connected",
+            "detail": "Local estimates are shown; add provider admin keys only if you want optional official billing checks.",
+        })
+    if not alerts:
+        alerts.append({
+            "severity": "ok",
+            "title": "No active budget alerts",
+            "detail": "Configured budget thresholds are below their warning levels for the selected data.",
+        })
+    return alerts
+
+
+def billing_window(days: int) -> tuple[datetime, datetime]:
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=max(1, int(days)))
+    return start, end
+
+
+def fetch_json(
+    url: str,
+    headers: dict[str, str],
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout: int = 20,
+) -> dict[str, Any]:
+    body = None
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers = dict(headers)
+        headers.setdefault("Content-Type", "application/json")
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(2_000_000)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code} from provider API") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"connection failed: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("request timed out") from exc
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError("provider returned non-JSON response") from exc
+
+
+def numeric_value(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def sum_keys_deep(data: Any, names: set[str]) -> float:
+    total = 0.0
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key.lower() in names:
+                total += numeric_value(value)
+            total += sum_keys_deep(value, names)
+    elif isinstance(data, list):
+        for item in data:
+            total += sum_keys_deep(item, names)
+    return total
+
+
+def count_collection_rows(data: Any) -> int:
+    if isinstance(data, dict):
+        for key in ("data", "results", "items", "teamMemberSpend", "members"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return len(value)
+    return 0
+
+
+def parse_openai_cost_usd(data: dict[str, Any]) -> float:
+    total = 0.0
+    for bucket in data.get("data") or []:
+        if not isinstance(bucket, dict):
+            continue
+        for result in bucket.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            amount = result.get("amount")
+            if isinstance(amount, dict):
+                total += numeric_value(amount.get("value"))
+            else:
+                total += numeric_value(amount)
+    return total
+
+
+def build_billing_connectors(fetch: bool = False, days: int = 30, timeout: int = 20) -> list[dict[str, Any]]:
+    start, end = billing_window(days)
+    rows: list[dict[str, Any]] = []
+
+    def add(row: dict[str, Any]) -> None:
+        row.setdefault("status", "not configured")
+        row.setdefault("period", f"{start.date()} to {end.date()}")
+        row.setdefault("records", "not queried")
+        row.setdefault("official_usd", "")
+        row.setdefault("blocked", "")
+        rows.append(row)
+
+    openai_key = os.environ.get("OPENAI_ADMIN_KEY")
+    openai = {
+        "provider": "OpenAI",
+        "env_var": "OPENAI_ADMIN_KEY",
+        "docs_url": OPENAI_COSTS_API_URL,
+        "exact": "organization costs from OpenAI Costs API",
+        "status": "configured" if openai_key else "not configured",
+        "blocked": "" if openai_key else "set OPENAI_ADMIN_KEY to fetch organization costs",
+    }
+    if fetch and openai_key:
+        params = urllib.parse.urlencode({
+            "start_time": int(start.timestamp()),
+            "end_time": int(end.timestamp()),
+            "limit": 180,
+        })
+        try:
+            data = fetch_json(
+                f"https://api.openai.com/v1/organization/costs?{params}",
+                {"Authorization": f"Bearer {openai_key}", "User-Agent": f"ai-coding-usage-tracker/{VERSION}"},
+                timeout=timeout,
+            )
+            total = parse_openai_cost_usd(data)
+            openai.update({"status": "fetched", "records": str(count_collection_rows(data)), "official_usd": round(total, 4)})
+        except Exception as exc:
+            openai.update({"status": "fetch failed", "blocked": str(exc)})
+    add(openai)
+
+    anthropic_key = os.environ.get("ANTHROPIC_ADMIN_KEY")
+    anthropic = {
+        "provider": "Anthropic",
+        "env_var": "ANTHROPIC_ADMIN_KEY",
+        "docs_url": ANTHROPIC_USAGE_COST_API_URL,
+        "exact": "organization costs from Anthropic Usage and Cost APIs",
+        "status": "configured" if anthropic_key else "not configured",
+        "blocked": "" if anthropic_key else "set ANTHROPIC_ADMIN_KEY to fetch organization cost data",
+    }
+    if fetch and anthropic_key:
+        params = urllib.parse.urlencode({
+            "starting_at": start.date().isoformat(),
+            "ending_at": end.date().isoformat(),
+        })
+        try:
+            data = fetch_json(
+                f"https://api.anthropic.com/v1/organizations/cost_report?{params}",
+                {
+                    "x-api-key": anthropic_key,
+                    "anthropic-version": "2023-06-01",
+                    "User-Agent": f"ai-coding-usage-tracker/{VERSION}",
+                },
+                timeout=timeout,
+            )
+            total = sum_keys_deep(data, {"amount_usd", "cost_usd", "total_usd", "total_cost_usd"})
+            anthropic.update({"status": "fetched", "records": str(count_collection_rows(data)), "official_usd": round(total, 4) if total else ""})
+        except Exception as exc:
+            anthropic.update({"status": "fetch failed", "blocked": str(exc)})
+    add(anthropic)
+
+    cursor_key = os.environ.get("CURSOR_ADMIN_API_KEY")
+    cursor = {
+        "provider": "Cursor",
+        "env_var": "CURSOR_ADMIN_API_KEY",
+        "docs_url": CURSOR_ADMIN_API_URL,
+        "exact": "team spend from Cursor Admin API",
+        "status": "configured" if cursor_key else "not configured",
+        "blocked": "" if cursor_key else "set CURSOR_ADMIN_API_KEY to fetch team spending",
+    }
+    if fetch and cursor_key:
+        token = base64.b64encode(f"{cursor_key}:".encode("utf-8")).decode("ascii")
+        try:
+            data = fetch_json(
+                "https://api.cursor.com/teams/spend",
+                {"Authorization": f"Basic {token}", "User-Agent": f"ai-coding-usage-tracker/{VERSION}"},
+                method="POST",
+                payload={"page": 1, "pageSize": 100},
+                timeout=timeout,
+            )
+            cents = sum_keys_deep(data, {"spendcents", "totalspendcents"})
+            cursor.update({"status": "fetched", "records": str(count_collection_rows(data)), "official_usd": round(cents / 100.0, 4) if cents else ""})
+        except Exception as exc:
+            cursor.update({"status": "fetch failed", "blocked": str(exc)})
+    add(cursor)
+
+    return rows
 
 
 def thread_range_text(threads: list[dict[str, Any]], report_tz: Any = None) -> str:
@@ -2426,6 +3075,14 @@ def sync_wakatime(
     return {"ok": not errors, "sent": sent, "skipped": skipped, "errors": errors}
 
 
+def enrich_summary(summary: dict[str, Any], args: argparse.Namespace | None = None) -> dict[str, Any]:
+    budgets = budget_options(args)
+    summary["budgets"] = budgets
+    summary["alerts"] = build_usage_alerts(summary, budgets)
+    summary["billing_connectors"] = build_billing_connectors(fetch=False)
+    return summary
+
+
 def load_report_data(args: argparse.Namespace, private_for_sync: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any], Any]:
     report_tz = resolve_timezone(getattr(args, "timezone", None))
     threads = load_selected_threads(args, report_tz=report_tz)
@@ -2442,6 +3099,7 @@ def load_report_data(args: argparse.Namespace, private_for_sync: bool = False) -
             hash_projects=bool(getattr(args, "hash_projects", False)),
         )
     summary = aggregate_threads(threads)
+    enrich_summary(summary, args)
     return threads, summary, report_tz
 
 
@@ -2501,7 +3159,7 @@ def demo_threads(report_tz: Any = None) -> list[dict[str, Any]]:
         demo_thread(
             "demo-usage-dashboard",
             "Build usage dashboard and README launch copy",
-            "C:\\Projects\\codex-usage-tracker",
+            "C:\\Projects\\ai-coding-usage-tracker",
             "gpt-5.5",
             base,
             72,
@@ -2517,7 +3175,7 @@ def demo_threads(report_tz: Any = None) -> list[dict[str, Any]]:
         demo_thread(
             "demo-security-pass",
             "Review privacy controls and secret handling",
-            "C:\\Projects\\codex-usage-tracker",
+            "C:\\Projects\\ai-coding-usage-tracker",
             "gpt-5.4",
             base + timedelta(hours=3),
             38,
@@ -2549,7 +3207,7 @@ def demo_threads(report_tz: Any = None) -> list[dict[str, Any]]:
         demo_thread(
             "demo-claude-code",
             "Refactor parser fixtures with Claude Code",
-            "C:\\Projects\\codex-usage-tracker",
+            "C:\\Projects\\ai-coding-usage-tracker",
             "claude-sonnet-4-6",
             base + timedelta(days=1, hours=1),
             46,
@@ -2618,6 +3276,7 @@ def command_demo(args: argparse.Namespace) -> int:
         hash_projects=bool(getattr(args, "hash_projects", False)),
     )
     summary = aggregate_threads(threads)
+    enrich_summary(summary, args)
     paths = write_reports(threads, summary, output_dir, report_tz=report_tz)
     print_report_summary(summary, paths)
     return 0
@@ -2763,6 +3422,157 @@ def command_source_audit(args: argparse.Namespace) -> int:
         ], args)
         for name, path in paths.items():
             print(f"{name}={path}")
+    return 0
+
+
+def billing_cli_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "provider": row.get("provider", ""),
+            "status": row.get("status", ""),
+            "period": row.get("period", ""),
+            "official_usd": row.get("official_usd", ""),
+            "env_var": row.get("env_var", ""),
+            "blocked": row.get("blocked", ""),
+        }
+        for row in rows
+    ]
+
+
+def command_billing(args: argparse.Namespace) -> int:
+    rows = build_billing_connectors(fetch=bool(args.fetch), days=int(args.days), timeout=int(args.timeout_seconds))
+    if args.format == "json":
+        print(json.dumps({"generated_at": datetime.now(timezone.utc).isoformat(), "connectors": rows}, indent=2, ensure_ascii=False))
+        return 0
+    return emit_rows(billing_cli_rows(rows), [
+        ("provider", "Provider"),
+        ("status", "Status"),
+        ("period", "Period"),
+        ("official_usd", "Official USD"),
+        ("env_var", "Env var"),
+        ("blocked", "Blocked"),
+    ], args)
+
+
+class DashboardTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def live_dashboard_document(document: str, refresh_seconds: int, url: str) -> str:
+    live_pill = '<span class="pill">Live auto-refresh</span>'
+    if "Live auto-refresh" not in document:
+        document = document.replace('<span class="pill">Private reports</span>', f'{live_pill}\n      <span class="pill">Private reports</span>', 1)
+    live_script = f"""
+  <script>
+    window.setTimeout(() => window.location.reload(), {int(refresh_seconds) * 1000});
+    console.info("AI Coding Usage Tracker live dashboard: {html.escape(url)}");
+  </script>
+"""
+    return document.replace("</body>", live_script + "</body>")
+
+
+def serve_file_response(handler: http.server.BaseHTTPRequestHandler, path: Path) -> None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        handler.send_error(404)
+        return
+    mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    handler.send_response(200)
+    handler.send_header("Content-Type", mime)
+    handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
+def make_dashboard_handler(args: argparse.Namespace, refresh_seconds: int, url: str) -> type[http.server.BaseHTTPRequestHandler]:
+    class DashboardHandler(http.server.BaseHTTPRequestHandler):
+        server_version = f"AICodingUsageTracker/{VERSION}"
+
+        def log_message(self, format: str, *values: Any) -> None:
+            sys.stderr.write(f"[serve] {self.address_string()} - {format % values}\n")
+
+        def do_GET(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            request_path = parsed.path or "/"
+            output_dir = Path(args.output_dir).expanduser()
+
+            try:
+                if request_path in {"/", "/dashboard.html"}:
+                    threads, summary, report_tz = load_report_data(args)
+                    paths = write_reports(threads, summary, output_dir, report_tz=report_tz)
+                    document = paths["dashboard_html"].read_text(encoding="utf-8")
+                    data = live_dashboard_document(document, refresh_seconds, url).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+
+                if request_path == "/api/summary":
+                    threads, summary, report_tz = load_report_data(args)
+                    model = build_gui_view_model(threads, summary, report_tz=report_tz)
+                    payload = json.dumps({
+                        "summary": serializable_summary(summary),
+                        "view": model,
+                        "alerts": summary.get("alerts", []),
+                        "billing_connectors": summary.get("billing_connectors", []),
+                    }, default=str, ensure_ascii=False).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
+                relative = request_path.lstrip("/")
+                if relative in {"codex_usage_summary.json", "threads.csv", "daily.csv", "sources.csv", "projects.csv", "models.csv", "source_audit.json", "source_audit.md"}:
+                    candidate = (output_dir / relative).resolve()
+                    root = output_dir.resolve()
+                    if root == candidate or root in candidate.parents:
+                        serve_file_response(self, candidate)
+                        return
+
+                self.send_error(404)
+            except Exception as exc:
+                data = f"Dashboard refresh failed: {html.escape(str(exc))}".encode("utf-8")
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+
+    return DashboardHandler
+
+
+def start_dashboard_server(args: argparse.Namespace, host: str, port: int, refresh_seconds: int) -> tuple[DashboardTCPServer, str]:
+    server = DashboardTCPServer((host, port), make_dashboard_handler(args, refresh_seconds, ""))
+    actual_host, actual_port = server.server_address
+    url = f"http://{actual_host}:{actual_port}/"
+    server.RequestHandlerClass = make_dashboard_handler(args, refresh_seconds, url)
+    return server, url
+
+
+def command_serve(args: argparse.Namespace) -> int:
+    refresh_seconds = validate_refresh_seconds(int(args.refresh_seconds))
+    server, url = start_dashboard_server(args, args.host, int(args.port), refresh_seconds)
+    print(f"Serving AI Coding Usage Tracker at {url}")
+    print("Press Ctrl+C to stop.")
+    if not args.no_open:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping server...")
+    finally:
+        server.shutdown()
+        server.server_close()
     return 0
 
 
@@ -3013,6 +3823,8 @@ class CodexUsageTrackerGui:
         self.table_widgets: dict[str, Any] = {}
         self.chart_canvases: dict[str, Any] = {}
         self.metric_vars: dict[str, Any] = {}
+        self.web_server: DashboardTCPServer | None = None
+        self.web_url: str | None = None
 
         self.root = tk.Tk()
         self.root.title("AI Coding Usage Tracker")
@@ -3064,6 +3876,7 @@ class CodexUsageTrackerGui:
         ttk.Label(controls, text="Search").pack(side="left")
         ttk.Entry(controls, textvariable=self.search_var, width=36).pack(side="left", padx=(6, 18))
         ttk.Button(controls, text="Generate HTML report", command=self.start_report).pack(side="left")
+        ttk.Button(controls, text="Open live web dashboard", command=self.open_web_dashboard).pack(side="left", padx=(12, 0))
 
         metrics = ttk.Frame(container)
         metrics.pack(fill="x", pady=(0, 12))
@@ -3081,6 +3894,8 @@ class CodexUsageTrackerGui:
             "Top model",
             "Cache hit rate",
             "Output share",
+            "Budget alerts",
+            "Billing connectors",
         ]
         for index, name in enumerate(metric_names):
             card = ttk.LabelFrame(metrics, text=name, padding=(10, 8))
@@ -3106,6 +3921,8 @@ class CodexUsageTrackerGui:
             "projects": "Projects",
             "models": "Models",
             "threads": "Threads",
+            "alerts": "Signals",
+            "billing": "Billing",
         }
         for key, title in table_specs.items():
             frame = ttk.Frame(notebook, padding=8)
@@ -3146,8 +3963,8 @@ class CodexUsageTrackerGui:
         tree.configure(columns=column_ids)
         for column_id, label in columns:
             tree.heading(column_id, text=label)
-            width = 230 if column_id in {"title", "folder"} else 120
-            anchor = "w" if column_id in {"app", "title", "project", "folder", "model", "last_activity"} else "e"
+            width = 300 if column_id in {"detail", "blocked"} else 230 if column_id in {"title", "folder"} else 120
+            anchor = "w" if column_id in {"app", "title", "project", "folder", "model", "last_activity", "detail", "blocked", "provider", "status", "env_var"} else "e"
             tree.column(column_id, width=width, minwidth=80, anchor=anchor, stretch=True)
 
     def start_refresh(self) -> None:
@@ -3189,6 +4006,23 @@ class CodexUsageTrackerGui:
             self.events.put(("report_ok", paths["dashboard_html"]))
         except Exception as exc:
             self.events.put(("report_error", str(exc)))
+
+    def open_web_dashboard(self) -> None:
+        try:
+            if self.web_server is None:
+                self.web_server, self.web_url = start_dashboard_server(
+                    self.args,
+                    "127.0.0.1",
+                    0,
+                    self.refresh_seconds,
+                )
+                thread = threading.Thread(target=self.web_server.serve_forever, daemon=True)
+                thread.start()
+            if self.web_url:
+                webbrowser.open(self.web_url)
+                self.status_var.set(f"Live web dashboard opened: {self.web_url}")
+        except Exception as exc:
+            self.status_var.set(f"Could not open live web dashboard: {exc}")
 
     def poll_events(self) -> None:
         while True:
@@ -3303,6 +4137,12 @@ class CodexUsageTrackerGui:
 
     def close(self) -> None:
         self.closed = True
+        if self.web_server is not None:
+            try:
+                self.web_server.shutdown()
+                self.web_server.server_close()
+            except Exception:
+                pass
         self.root.destroy()
 
     def run(self) -> None:
@@ -3342,6 +4182,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timezone", default=None, help="IANA timezone for date grouping, for example Asia/Colombo.")
     parser.add_argument("--redact", action="store_true", help="Hide thread titles, local folders, and log paths in reports.")
     parser.add_argument("--hash-projects", action="store_true", help="Replace project names with stable anonymous labels.")
+    parser.add_argument("--daily-token-budget", type=parse_positive_float, default=0.0, help="Optional daily token budget warning threshold.")
+    parser.add_argument("--daily-usd-budget", type=parse_positive_float, default=0.0, help="Optional daily estimated USD budget warning threshold.")
+    parser.add_argument("--monthly-token-budget", type=parse_positive_float, default=0.0, help="Optional month-to-date token budget warning threshold.")
+    parser.add_argument("--monthly-usd-budget", type=parse_positive_float, default=0.0, help="Optional month-to-date estimated USD budget warning threshold.")
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -3359,6 +4203,13 @@ def build_parser() -> argparse.ArgumentParser:
     gui = subparsers.add_parser("gui", help="Open a live native desktop dashboard.")
     gui.add_argument("--refresh-seconds", type=parse_refresh_seconds, default=10, help="Auto-refresh interval. Minimum: 2 seconds.")
     gui.set_defaults(func=command_gui)
+
+    serve = subparsers.add_parser("serve", help="Serve a live local web dashboard on 127.0.0.1.")
+    serve.add_argument("--host", default="127.0.0.1", help="Bind host. Default: 127.0.0.1.")
+    serve.add_argument("--port", type=int, default=8765, help="Bind port. Use 0 for a random free port.")
+    serve.add_argument("--refresh-seconds", type=parse_refresh_seconds, default=10, help="Browser auto-refresh interval. Minimum: 2 seconds.")
+    serve.add_argument("--no-open", action="store_true", help="Do not open the dashboard in the default browser.")
+    serve.set_defaults(func=command_serve)
 
     doctor = subparsers.add_parser("doctor", help="Check Codex logs, parser readiness, WakaTime, and output paths.")
     doctor.set_defaults(func=command_doctor)
@@ -3395,6 +4246,15 @@ def build_parser() -> argparse.ArgumentParser:
     source_audit.add_argument("--format", choices=["table", "json", "markdown"], default="table")
     source_audit.add_argument("--compact", action="store_true", help="Trim wide table cells for terminal use.")
     source_audit.set_defaults(func=command_source_audit)
+
+    billing = subparsers.add_parser("billing", help="Check optional official billing connectors.")
+    billing.add_argument("--format", choices=["table", "json"], default="table")
+    billing.add_argument("--days", type=int, default=30, help="Billing lookback window for providers that support date ranges.")
+    billing.add_argument("--timeout-seconds", type=int, default=20, help="HTTP timeout when --fetch is used.")
+    billing.add_argument("--fetch", action="store_true", help="Call configured provider APIs. Never prints configured keys.")
+    billing.add_argument("--limit", type=int, default=20, help=argparse.SUPPRESS)
+    billing.add_argument("--compact", action="store_true", help="Trim wide table cells for terminal use.")
+    billing.set_defaults(func=command_billing)
 
     sync = subparsers.add_parser("sync-wakatime", help="Send recent Codex app activity to WakaTime.")
     sync.add_argument("--wakatime-since-minutes", type=int, default=180)

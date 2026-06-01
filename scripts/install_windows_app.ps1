@@ -1,6 +1,6 @@
 param(
     [string]$SourceExe = "",
-    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\CodexUsageTracker"),
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\AICodingUsageTracker"),
     [switch]$NoDesktopShortcut
 )
 
@@ -17,6 +17,7 @@ function Resolve-SourceExe {
     }
 
     $candidates = @(
+        (Join-Path $Root "dist\AICodingUsageTracker.exe"),
         (Join-Path $Root "dist\CodexUsageTracker.exe"),
         (Join-Path $Root "dist\CodexUsageTrackerAllSources.exe")
     )
@@ -50,9 +51,12 @@ function New-AppShortcut {
 }
 
 $source = Resolve-SourceExe -ExplicitPath $SourceExe
-$installPath = Join-Path $InstallDir "CodexUsageTracker.exe"
-$startMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Codex Usage Tracker.lnk"
-$desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Codex Usage Tracker.lnk"
+$installPath = Join-Path $InstallDir "AICodingUsageTracker.exe"
+$startMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\AI Coding Usage Tracker.lnk"
+$desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "AI Coding Usage Tracker.lnk"
+$legacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\CodexUsageTracker"
+$legacyStartMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Codex Usage Tracker.lnk"
+$legacyDesktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Codex Usage Tracker.lnk"
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -LiteralPath $source -Destination $installPath -Force
@@ -63,7 +67,17 @@ if (-not $NoDesktopShortcut) {
     New-AppShortcut -ShortcutPath $desktopShortcut -TargetPath $installPath -WorkingDirectory $InstallDir
 }
 
-Write-Host "Installed Codex Usage Tracker"
+foreach ($legacyPath in @($legacyStartMenuShortcut, $legacyDesktopShortcut)) {
+    if (Test-Path -LiteralPath $legacyPath) {
+        Remove-Item -LiteralPath $legacyPath -Force
+    }
+}
+
+if ($legacyInstallDir -ne $InstallDir -and (Test-Path -LiteralPath $legacyInstallDir)) {
+    Remove-Item -LiteralPath $legacyInstallDir -Recurse -Force
+}
+
+Write-Host "Installed AI Coding Usage Tracker"
 Write-Host "App: $installPath"
 Write-Host "Start Menu shortcut: $startMenuShortcut"
 if (-not $NoDesktopShortcut) {

@@ -56,22 +56,24 @@ Platform docs also point to useful improvements:
 
 Goal: someone should be able to run one command and immediately see value.
 
-- Add `codex-usage-tracker doctor`.
+- Add `ai-coding-usage-tracker doctor`.
 - Detect Codex data path, WakaTime config, Python version, OS, and output path.
 - Print a clear checklist: found logs, parsed sessions, WakaTime ready, pricing
   table version.
-- Add `codex-usage-tracker demo` using bundled fake data.
+- Add `ai-coding-usage-tracker demo` using bundled fake data.
 - Add installation options for `pipx`, `uv tool`, and direct GitHub release.
 
 ### 2. Add A Real Local Web App Mode
 
 Goal: make it feel like a product, not just a generated HTML file.
 
-- Add `codex-usage-tracker serve`.
+- Added `ai-coding-usage-tracker serve`.
 - Serve a local dashboard on `127.0.0.1`.
-- Add auto-refresh while Codex is active.
-- Add filters: date range, project, model, reasoning effort.
-- Add charts: daily tokens, credits, cache hit rate, output ratio, active time.
+- Added browser auto-refresh.
+- Added report filters through the existing global date/source/privacy flags and
+  dashboard table search.
+- Added daily trend bars, provider comparison, budget signals, connector status,
+  and the existing detailed tables.
 - Add "most expensive threads" and "most improved cache ratio" views.
 
 ### 3. Improve The CLI Reports
@@ -109,9 +111,11 @@ Goal: reduce confusion around "estimate vs actual".
 - Move pricing tables into `pricing.json`.
 - Add `pricing update` to refresh known rates from checked-in release data.
 - Track rate table version and source date in every report.
-- Add optional OpenAI API Costs sync for API usage, clearly separate from Codex
-  app credits.
-- Add budget warnings: daily, weekly, monthly, and per-project.
+- Added optional OpenAI, Anthropic, and Cursor billing connector checks that stay
+  separate from local estimates.
+- Added dashboard budget warnings for daily and month-to-date token/USD
+  thresholds.
+- Add weekly and per-project budget automation.
 
 ### 7. Packaging And Distribution
 
@@ -147,8 +151,9 @@ Goal: expand without pretending every app exposes the same data.
 
 ### Day 3
 
-- Add `serve` local web dashboard with filters and auto-refresh.
-- Keep the frontend dependency-free at first.
+- Added `serve` local web dashboard with search, provider tabs, budget signals,
+  connector status, and auto-refresh.
+- Kept the frontend dependency-free at first.
 
 ### Day 4
 
@@ -166,7 +171,7 @@ Goal: expand without pretending every app exposes the same data.
 - Create 8-12 GitHub issues from this roadmap.
 - Enable Discussions.
 - Add issue templates.
-- Add comparison section: "Codex Usage Tracker vs ccusage vs agentsview".
+- Add comparison section: "AI Coding Usage Tracker vs ccusage vs agentsview".
 
 ### Day 7
 

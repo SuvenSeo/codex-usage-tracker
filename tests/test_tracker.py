@@ -131,6 +131,24 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertEqual(args.refresh_seconds, 5)
         self.assertIs(args.func, tracker.command_gui)
 
+    def test_serve_subcommand_accepts_local_server_options(self):
+        parser = tracker.build_parser()
+        args = parser.parse_args(["--sources", "all", "serve", "--port", "0", "--refresh-seconds", "5", "--no-open"])
+
+        self.assertEqual(args.command, "serve")
+        self.assertEqual(args.port, 0)
+        self.assertEqual(args.refresh_seconds, 5)
+        self.assertTrue(args.no_open)
+        self.assertIs(args.func, tracker.command_serve)
+
+    def test_billing_subcommand_status_does_not_fetch_by_default(self):
+        parser = tracker.build_parser()
+        args = parser.parse_args(["billing", "--format", "json"])
+
+        self.assertEqual(args.command, "billing")
+        self.assertFalse(args.fetch)
+        self.assertIs(args.func, tracker.command_billing)
+
     def test_packaged_gui_launcher_defaults_to_all_sources(self):
         args = gui_launcher.launcher_args([])
 
@@ -159,6 +177,8 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertTrue(model["tables"]["projects"]["rows"])
         self.assertTrue(model["tables"]["models"]["rows"])
         self.assertTrue(model["tables"]["threads"]["rows"])
+        self.assertTrue(model["tables"]["alerts"]["rows"])
+        self.assertTrue(model["tables"]["billing"]["rows"])
         self.assertEqual(model["token_delta"], "")
         self.assertEqual(model["pricing"]["source_date"], tracker.PRICING_SOURCE_DATE)
 
@@ -172,6 +192,27 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertIn("color-scheme: dark", dashboard)
         self.assertIn("--bg: #101114", dashboard)
         self.assertIn("--panel: #181b20", dashboard)
+        self.assertIn("class=\"table-nav\"", dashboard)
+        self.assertIn("id=\"search-status\"", dashboard)
+        self.assertIn("@keyframes card-rise", dashboard)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", dashboard)
+        self.assertIn("Provider Comparison", dashboard)
+        self.assertIn("Official Billing Connectors", dashboard)
+        self.assertIn("Budget & Signals", dashboard)
+
+    def test_budget_alerts_warn_when_threshold_is_exceeded(self):
+        threads = tracker.demo_threads()
+        summary = tracker.aggregate_threads(threads)
+
+        alerts = tracker.build_usage_alerts(summary, {"daily_tokens": 1.0, "monthly_usd": 0.01})
+
+        self.assertTrue(any(alert["severity"] == "risk" for alert in alerts))
+
+    def test_billing_connectors_are_status_only_without_fetch(self):
+        rows = tracker.build_billing_connectors(fetch=False)
+
+        self.assertEqual({row["provider"] for row in rows}, {"OpenAI", "Anthropic", "Cursor"})
+        self.assertTrue(all("env_var" in row for row in rows))
 
     def test_gui_theme_is_dark_default(self):
         self.assertEqual(tracker.DARK_THEME["mode"], "dark")

@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+- Added a dependency-free `serve` command for a live local web dashboard with
+  browser auto-refresh.
+- Upgraded the generated dashboard with trend bars, budget signals, provider
+  comparison tabs, official connector status, clearable search, and
+  micro-interactions.
+- Added optional official billing connector checks for OpenAI, Anthropic, and
+  Cursor admin keys.
+- Added native GUI polish with signal/billing tabs and an **Open live web
+  dashboard** handoff.
+- Rebranded the public project to AI Coding Usage Tracker while keeping the
+  existing PyPI package name for compatibility.
+- Added `ai-coding-usage-tracker` as the preferred console command while
+  retaining `codex-usage-tracker` as a legacy alias.
+
 ## v0.2.0 - 2026-05-30
 
 - Added opt-in multi-source reports with `--sources codex,claude,cursor` and `--sources all`.

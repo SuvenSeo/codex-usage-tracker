@@ -1,15 +1,18 @@
-# Codex Usage Tracker
+# AI Coding Usage Tracker
 
-[![CI](https://github.com/SuvenSeo/codex-usage-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/SuvenSeo/codex-usage-tracker/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/SuvenSeo/codex-usage-tracker)](https://github.com/SuvenSeo/codex-usage-tracker/releases)
+[![CI](https://github.com/SuvenSeo/ai-coding-usage-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/SuvenSeo/ai-coding-usage-tracker/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/SuvenSeo/ai-coding-usage-tracker)](https://github.com/SuvenSeo/ai-coding-usage-tracker/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
 Local-first usage analytics for Codex, Claude Code, and Cursor.
 
-Codex Usage Tracker reads local AI coding data and generates a private dashboard for token usage, app/source totals, estimated Codex credits, estimated USD, project breakdowns, terminal reports, and optional WakaTime `ai coding` time.
+AI Coding Usage Tracker reads local AI coding data and generates a private
+dashboard for token usage, app/source totals, estimated Codex credits,
+estimated USD, project breakdowns, terminal reports, and optional WakaTime
+`ai coding` time.
 
-![Demo dashboard](https://raw.githubusercontent.com/SuvenSeo/codex-usage-tracker/main/docs/assets/demo-dashboard.svg)
+![Demo dashboard](https://raw.githubusercontent.com/SuvenSeo/ai-coding-usage-tracker/main/docs/assets/demo-dashboard.svg)
 
 ## Why
 
@@ -29,9 +32,12 @@ This tool gives you those answers locally, without uploading Codex transcripts t
 - Reads Claude Code project transcripts from `~/.claude/projects`
 - Reads Cursor AI edit activity from `~/.cursor/ai-tracking/ai-code-tracking.db`
 - Generates `HTML`, `CSV`, and `JSON` reports
+- Serves a live local web dashboard with auto-refresh on `127.0.0.1`
+- Shows trend bars, provider comparison tabs, budget signals, and connector status
 - Prints `daily`, `weekly`, `monthly`, `session`, `project`, `model`, and `source` terminal reports
 - Estimates Codex credits from input, cached input, and output tokens
 - Shows estimated USD for Codex and Claude Code where local token logs and known rates exist
+- Checks optional official billing connectors without printing configured keys
 - Includes `doctor` and `demo` commands for first-run confidence
 - Supports date filters with `--days`, `--since`, `--until`, and `--timezone`
 - Supports share-safe output with `--redact` and `--hash-projects`
@@ -44,21 +50,25 @@ Install from PyPI with `pipx`:
 
 ```bash
 pipx install codex-usage-tracker
-codex-usage-tracker demo
+ai-coding-usage-tracker demo
 ```
 
 Or install with `pip`:
 
 ```bash
 python -m pip install codex-usage-tracker
-codex-usage-tracker demo
+ai-coding-usage-tracker demo
 ```
+
+The PyPI package is still named `codex-usage-tracker` for compatibility. New
+installs expose `ai-coding-usage-tracker`; the legacy `codex-usage-tracker`
+command remains available.
 
 For local development, clone the repo:
 
 ```bash
-git clone https://github.com/SuvenSeo/codex-usage-tracker.git
-cd codex-usage-tracker
+git clone https://github.com/SuvenSeo/ai-coding-usage-tracker.git
+cd ai-coding-usage-tracker
 ```
 
 Run directly with Python:
@@ -71,11 +81,11 @@ Or install the CLI locally:
 
 ```bash
 pip install -e .
-codex-usage-tracker report
+ai-coding-usage-tracker report
 ```
 
-Windows users can also download `CodexUsageTracker.exe` from the
-[latest release](https://github.com/SuvenSeo/codex-usage-tracker/releases/latest).
+Windows users can also download `AICodingUsageTracker.exe` from the
+[latest release](https://github.com/SuvenSeo/ai-coding-usage-tracker/releases/latest).
 The release includes a SHA256 checksum file.
 
 ## Quick Start
@@ -83,19 +93,19 @@ The release includes a SHA256 checksum file.
 Check your machine:
 
 ```bash
-codex-usage-tracker doctor
+ai-coding-usage-tracker doctor
 ```
 
 Generate the full local dashboard:
 
 ```bash
-codex-usage-tracker report
+ai-coding-usage-tracker report
 ```
 
 Include Codex, Claude Code, and Cursor in one report:
 
 ```bash
-codex-usage-tracker --sources all report
+ai-coding-usage-tracker --sources all report
 ```
 
 Open:
@@ -104,18 +114,29 @@ Open:
 out/dashboard.html
 ```
 
+Serve a live local web dashboard:
+
+```bash
+ai-coding-usage-tracker --sources all --days 14 serve
+```
+
+By default this opens `http://127.0.0.1:8765/`, reloads the page every 10
+seconds, and keeps all data local. Use `serve --port 0 --no-open` when you want
+an auto-selected port without launching a browser.
+
 Open the live native desktop dashboard:
 
 ```bash
-codex-usage-tracker --sources all --days 7 --timezone Asia/Colombo gui
+ai-coding-usage-tracker --sources all --days 7 --timezone Asia/Colombo gui
 ```
 
 The GUI uses Python's built-in Tkinter toolkit, polls selected local sources every 10
-seconds by default, opens in dark mode by default, and includes a button to
-generate the normal `out/` HTML/CSV/JSON reports. Change the interval with:
+seconds by default, opens in dark mode by default, includes a button to generate
+the normal `out/` HTML/CSV/JSON reports, and includes an **Open live web
+dashboard** button for the smoother browser UI. Change the interval with:
 
 ```bash
-codex-usage-tracker gui --refresh-seconds 5
+ai-coding-usage-tracker gui --refresh-seconds 5
 ```
 
 Build a double-clickable Windows EXE:
@@ -125,7 +146,7 @@ python -m pip install -e ".[build]"
 .\scripts\build_windows_exe.ps1
 ```
 
-The generated app is written to `dist\CodexUsageTracker.exe`. Double-clicking it
+The generated app is written to `dist\AICodingUsageTracker.exe`. Double-clicking it
 opens the live GUI with Codex, Claude Code, and Cursor selected. It reads only
 local data folders on your machine.
 
@@ -135,7 +156,7 @@ Install it as a normal user-level Windows app:
 .\scripts\install_windows_app.ps1
 ```
 
-That copies the EXE to `%LOCALAPPDATA%\Programs\CodexUsageTracker` and creates
+That copies the EXE to `%LOCALAPPDATA%\Programs\AICodingUsageTracker` and creates
 Start Menu plus Desktop shortcuts. Remove it with:
 
 ```powershell
@@ -145,7 +166,7 @@ Start Menu plus Desktop shortcuts. Remove it with:
 Try a safe public demo:
 
 ```bash
-codex-usage-tracker demo
+ai-coding-usage-tracker demo
 ```
 
 That writes synthetic reports to `out/demo/`.
@@ -155,19 +176,19 @@ That writes synthetic reports to `out/demo/`.
 Global scope and privacy flags go before the command:
 
 ```bash
-codex-usage-tracker --days 7 daily
-codex-usage-tracker --since 2026-05-01 --until 2026-05-24 weekly
-codex-usage-tracker --timezone Asia/Colombo monthly
-codex-usage-tracker --sources all source
-codex-usage-tracker session --limit 10 --compact
-codex-usage-tracker project --format json
-codex-usage-tracker model --format csv
+ai-coding-usage-tracker --days 7 daily
+ai-coding-usage-tracker --since 2026-05-01 --until 2026-05-24 weekly
+ai-coding-usage-tracker --timezone Asia/Colombo monthly
+ai-coding-usage-tracker --sources all source
+ai-coding-usage-tracker session --limit 10 --compact
+ai-coding-usage-tracker project --format json
+ai-coding-usage-tracker model --format csv
 ```
 
 Create a share-safe report:
 
 ```bash
-codex-usage-tracker --sources all --redact --hash-projects report
+ai-coding-usage-tracker --sources all --redact --hash-projects report
 ```
 
 Source selection is opt-in. The default is `--sources codex`; use
@@ -177,7 +198,7 @@ Source selection is opt-in. The default is `--sources codex`; use
 Audit every local and official source the tracker knows about:
 
 ```bash
-codex-usage-tracker --sources all source-audit
+ai-coding-usage-tracker --sources all source-audit
 ```
 
 The audit writes `out/source_audit.json` and `out/source_audit.md`. It separates
@@ -186,6 +207,28 @@ legacy `state.vscdb` daily stats can show historical suggested/accepted line
 counts, but not exact Cursor tokens, credits, or spend. Vendor admin APIs can
 provide deeper billing detail only when the matching admin key is configured.
 
+Check optional official billing connector status:
+
+```bash
+ai-coding-usage-tracker billing
+```
+
+Set provider admin keys only when you want official account-side checks, then
+run an explicit fetch:
+
+```bash
+ai-coding-usage-tracker billing --fetch --format json
+```
+
+Supported environment variable names are `OPENAI_ADMIN_KEY`,
+`ANTHROPIC_ADMIN_KEY`, and `CURSOR_ADMIN_API_KEY`. Keys are never printed.
+
+Add dashboard budget signals with global flags before the command:
+
+```bash
+ai-coding-usage-tracker --sources all --daily-token-budget 250000 --daily-usd-budget 5 --monthly-usd-budget 100 report
+```
+
 ## WakaTime
 
 WakaTime sync is optional. It requires `wakatime-cli` and a normal `~/.wakatime.cfg` file.
@@ -193,7 +236,7 @@ WakaTime sync is optional. It requires `wakatime-cli` and a normal `~/.wakatime.
 Generate reports and sync recent Codex activity:
 
 ```bash
-codex-usage-tracker run --sync-wakatime
+ai-coding-usage-tracker run --sync-wakatime
 ```
 
 The tracker sends conservative heartbeats with:
@@ -260,7 +303,7 @@ See [docs/PRIVACY.md](docs/PRIVACY.md) before sharing dashboards or CSV files.
 
 | Tool | Best For | Difference |
 | --- | --- | --- |
-| Codex Usage Tracker | AI coding users who want local Codex, Claude Code, and Cursor visibility | Dependency-light, private generated dashboard with Codex token/cost depth |
+| AI Coding Usage Tracker | AI coding users who want local Codex, Claude Code, and Cursor visibility | Dependency-light, private generated dashboard with Codex token/cost depth |
 | ccusage | Multi-agent terminal usage reports | Broader agent support and mature CLI reporting |
 | agentsview | Local multi-agent session intelligence | Richer local web app and session indexing |
 | codex-wakatime | Codex CLI WakaTime hook | Focused time tracking, not token/cost dashboards |
@@ -284,7 +327,7 @@ python -m build
 ```
 
 New contributors can start with
-[good first issues](https://github.com/SuvenSeo/codex-usage-tracker/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+[good first issues](https://github.com/SuvenSeo/ai-coding-usage-tracker/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 or the current [roadmap](docs/ROADMAP.md). See [CONTRIBUTING.md](CONTRIBUTING.md)
 for the privacy rules and PR checklist.
 

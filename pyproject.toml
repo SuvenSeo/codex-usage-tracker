@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "codex-usage-tracker"
 version = "0.2.0"
-description = "Local usage dashboard for Codex, Claude Code, Cursor, and WakaTime AI coding time."
+description = "Local AI coding usage dashboard for Codex, Claude Code, Cursor, and WakaTime."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -38,8 +38,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SuvenSeo/codex-usage-tracker"
-Issues = "https://github.com/SuvenSeo/codex-usage-tracker/issues"
+Homepage = "https://github.com/SuvenSeo/ai-coding-usage-tracker"
+Issues = "https://github.com/SuvenSeo/ai-coding-usage-tracker/issues"
 
 [project.optional-dependencies]
 build = [
@@ -47,6 +47,7 @@ build = [
 ]
 
 [project.scripts]
+ai-coding-usage-tracker = "codex_app_tracker:main"
 codex-usage-tracker = "codex_app_tracker:main"
 
 [tool.setuptools]

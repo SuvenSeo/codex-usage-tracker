@@ -1,6 +1,6 @@
 ## Summary
 
-What should Codex Usage Tracker do differently?
+What should AI Coding Usage Tracker do differently?
 
 ## Context
 
@@ -14,7 +14,7 @@ What should Codex Usage Tracker do differently?
 If relevant, paste output from:
 
 ```bash
-codex-usage-tracker --redact --hash-projects doctor
+ai-coding-usage-tracker --redact --hash-projects doctor
 ```
 
 Do not paste private prompts, responses, raw Codex logs, API keys, tokens, or

@@ -2,7 +2,7 @@
 
 ## Repository Tagline
 
-Local dashboard for Codex, Claude Code, Cursor, and WakaTime AI coding time.
+Local AI coding usage dashboard for Codex, Claude Code, Cursor, and WakaTime.
 
 ## GitHub Description
 
@@ -24,6 +24,9 @@ It reads selected local app data and generates a dashboard for:
 - estimated USD where token logs and known rates exist
 - Cursor AI edit activity and request counts
 - active coding time
+- live local web dashboard with auto-refresh
+- budget signals and provider comparison
+- optional official billing connector checks
 - terminal reports for daily/project/model/session/source views
 - privacy-safe redaction for sharing
 - optional WakaTime `ai coding` heartbeats
@@ -32,7 +35,7 @@ Why I made it: I wanted a simple way to understand what my AI coding sessions we
 
 It is early, but it works locally and is open source:
 
-https://github.com/SuvenSeo/codex-usage-tracker
+https://github.com/SuvenSeo/ai-coding-usage-tracker
 
 Would love feedback from other AI coding tool users.
 
@@ -40,7 +43,7 @@ Would love feedback from other AI coding tool users.
 
 Made a local-first AI coding usage dashboard: Codex/Claude tokens, Cursor AI edit activity, app/project breakdowns, and WakaTime AI coding time.
 
-Repo: https://github.com/SuvenSeo/codex-usage-tracker
+Repo: https://github.com/SuvenSeo/ai-coding-usage-tracker
 
 ## Reddit / Hacker News Angle
 

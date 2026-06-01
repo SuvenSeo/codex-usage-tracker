@@ -1,83 +1,83 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820" role="img" aria-labelledby="title desc">
   <title id="title">AI coding usage tracker demo dashboard</title>
   <desc id="desc">A sample local analytics dashboard with app totals, token totals, estimated credits, cache hit rate, searchable tables, and a developer credit footer.</desc>
-  <rect width="1280" height="820" fill="#f5f6f8"/>
+  <rect width="1280" height="820" fill="#101114"/>
   <g transform="translate(72 38)" font-family="Segoe UI, Arial, sans-serif">
-    <g font-size="12" fill="#344054">
-      <rect x="0" y="0" width="82" height="28" rx="14" fill="#fff" stroke="#d7dce2"/>
+    <g font-size="12" fill="#a8b0bd">
+      <rect x="0" y="0" width="82" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
       <text x="14" y="18">Local-first</text>
-      <rect x="96" y="0" width="104" height="28" rx="14" fill="#fff" stroke="#d7dce2"/>
+      <rect x="96" y="0" width="104" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
       <text x="110" y="18">Private reports</text>
-      <rect x="214" y="0" width="112" height="28" rx="14" fill="#fff" stroke="#d7dce2"/>
+      <rect x="214" y="0" width="112" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
       <text x="228" y="18">WakaTime ready</text>
-      <rect x="340" y="0" width="118" height="28" rx="14" fill="#fff" stroke="#d7dce2"/>
+      <rect x="340" y="0" width="118" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
       <text x="354" y="18">Codex logs</text>
-      <rect x="472" y="0" width="128" height="28" rx="14" fill="#fff" stroke="#d7dce2"/>
+      <rect x="472" y="0" width="128" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
       <text x="486" y="18">Claude/Cursor</text>
     </g>
-    <text x="0" y="76" font-size="34" font-weight="700" fill="#151a22">AI Coding Usage Dashboard</text>
-    <text x="0" y="112" font-size="16" fill="#667085">Generated from selected local AI coding data. Estimates help with project-level usage, not official billing.</text>
+    <text x="0" y="76" font-size="34" font-weight="700" fill="#f5f7fa">AI Coding Usage Dashboard</text>
+    <text x="0" y="112" font-size="16" fill="#a8b0bd">Generated from selected local AI coding data. Estimates help with project-level usage, not official billing.</text>
 
     <g transform="translate(0 148)">
       <g>
-        <rect width="210" height="92" rx="8" fill="#fff" stroke="#d7dce2"/>
-        <text x="18" y="31" font-size="13" fill="#667085">Threads</text>
-        <text x="18" y="68" font-size="26" font-weight="700" fill="#151a22">3</text>
+        <rect width="210" height="92" rx="8" fill="#181b20" stroke="#333a45"/>
+        <text x="18" y="31" font-size="13" fill="#a8b0bd">Apps</text>
+        <text x="18" y="68" font-size="26" font-weight="700" fill="#f5f7fa">3</text>
       </g>
       <g transform="translate(224 0)">
-        <rect width="230" height="92" rx="8" fill="#fff" stroke="#d7dce2"/>
-        <text x="18" y="31" font-size="13" fill="#667085">Total tokens</text>
-        <text x="18" y="68" font-size="26" font-weight="700" fill="#1f6feb">492,800</text>
+        <rect width="230" height="92" rx="8" fill="#181b20" stroke="#333a45"/>
+        <text x="18" y="31" font-size="13" fill="#a8b0bd">Threads</text>
+        <text x="18" y="68" font-size="26" font-weight="700" fill="#58a6ff">5</text>
       </g>
       <g transform="translate(468 0)">
-        <rect width="250" height="92" rx="8" fill="#fff" stroke="#d7dce2"/>
-        <text x="18" y="31" font-size="13" fill="#667085">Estimated Codex credits</text>
-        <text x="18" y="68" font-size="26" font-weight="700" fill="#1a7f64">39.78</text>
+        <rect width="250" height="92" rx="8" fill="#181b20" stroke="#333a45"/>
+        <text x="18" y="31" font-size="13" fill="#a8b0bd">Total tokens</text>
+        <text x="18" y="68" font-size="26" font-weight="700" fill="#36c58c">687,000</text>
       </g>
       <g transform="translate(732 0)">
-        <rect width="210" height="92" rx="8" fill="#fff" stroke="#d7dce2"/>
-        <text x="18" y="31" font-size="13" fill="#667085">Estimated USD</text>
-        <text x="18" y="68" font-size="26" font-weight="700" fill="#b7791f">$1.59</text>
+        <rect width="210" height="92" rx="8" fill="#181b20" stroke="#333a45"/>
+        <text x="18" y="31" font-size="13" fill="#a8b0bd">Estimated credits</text>
+        <text x="18" y="68" font-size="26" font-weight="700" fill="#f1b84b">39.78</text>
       </g>
       <g transform="translate(956 0)">
-        <rect width="210" height="92" rx="8" fill="#fff" stroke="#d7dce2"/>
-        <text x="18" y="31" font-size="13" fill="#667085">Estimated active time</text>
-        <text x="18" y="68" font-size="26" font-weight="700" fill="#b42318">147.0 min</text>
+        <rect width="210" height="92" rx="8" fill="#181b20" stroke="#333a45"/>
+        <text x="18" y="31" font-size="13" fill="#a8b0bd">Estimated USD</text>
+        <text x="18" y="68" font-size="26" font-weight="700" fill="#ff7b72">$2.02</text>
       </g>
     </g>
 
     <g transform="translate(0 262)">
       <g>
-        <rect width="270" height="82" rx="8" fill="#fff" stroke="#d7dce2"/>
-        <text x="16" y="30" font-size="13" fill="#667085">Top project</text>
-        <text x="16" y="62" font-size="17" font-weight="700" fill="#151a22">codex-usage-tracker</text>
+        <rect width="270" height="82" rx="8" fill="#181b20" stroke="#333a45"/>
+        <text x="16" y="30" font-size="13" fill="#a8b0bd">Top project</text>
+        <text x="16" y="62" font-size="17" font-weight="700" fill="#f5f7fa">ai-coding-usage-tracker</text>
       </g>
       <g transform="translate(286 0)">
-        <rect width="230" height="82" rx="8" fill="#fff" stroke="#d7dce2"/>
-        <text x="16" y="30" font-size="13" fill="#667085">Top model</text>
-        <text x="16" y="62" font-size="17" font-weight="700" fill="#151a22">gpt-5.5</text>
+        <rect width="230" height="82" rx="8" fill="#181b20" stroke="#333a45"/>
+        <text x="16" y="30" font-size="13" fill="#a8b0bd">Top model</text>
+        <text x="16" y="62" font-size="17" font-weight="700" fill="#f5f7fa">gpt-5.5</text>
       </g>
       <g transform="translate(532 0)">
-        <rect width="230" height="82" rx="8" fill="#fff" stroke="#d7dce2"/>
-        <text x="16" y="30" font-size="13" fill="#667085">Cache hit rate</text>
-        <text x="16" y="62" font-size="17" font-weight="700" fill="#151a22">50.3%</text>
+        <rect width="230" height="82" rx="8" fill="#181b20" stroke="#333a45"/>
+        <text x="16" y="30" font-size="13" fill="#a8b0bd">Cache hit rate</text>
+        <text x="16" y="62" font-size="17" font-weight="700" fill="#f5f7fa">55.0%</text>
       </g>
       <g transform="translate(778 0)">
-        <rect width="230" height="82" rx="8" fill="#fff" stroke="#d7dce2"/>
-        <text x="16" y="30" font-size="13" fill="#667085">Output share</text>
-        <text x="16" y="62" font-size="17" font-weight="700" fill="#151a22">7.7%</text>
+        <rect width="230" height="82" rx="8" fill="#181b20" stroke="#333a45"/>
+        <text x="16" y="30" font-size="13" fill="#a8b0bd">Output share</text>
+        <text x="16" y="62" font-size="17" font-weight="700" fill="#f5f7fa">7.6%</text>
       </g>
     </g>
 
-    <text x="0" y="438" font-size="20" font-weight="700" fill="#151a22">Usage Tables</text>
-    <rect x="790" y="404" width="376" height="46" rx="7" fill="#fff" stroke="#d7dce2"/>
-    <text x="806" y="433" font-size="15" fill="#667085">Filter tables by project, model, title, or date</text>
+    <text x="0" y="438" font-size="20" font-weight="700" fill="#f5f7fa">Usage Tables</text>
+    <rect x="790" y="404" width="376" height="46" rx="7" fill="#181b20" stroke="#333a45"/>
+    <text x="806" y="433" font-size="15" fill="#a8b0bd">Filter tables by project, model, title, or date</text>
 
-    <text x="0" y="498" font-size="18" font-weight="700" fill="#151a22">Daily Usage</text>
+    <text x="0" y="498" font-size="18" font-weight="700" fill="#f5f7fa">Daily Usage</text>
     <g transform="translate(0 516)">
-      <rect width="1166" height="122" rx="8" fill="#fff" stroke="#d7dce2"/>
-      <rect width="1166" height="40" rx="8" fill="#eef1f4"/>
-      <g font-size="13" font-weight="700" fill="#344054">
+      <rect width="1166" height="122" rx="8" fill="#181b20" stroke="#333a45"/>
+      <rect width="1166" height="40" rx="8" fill="#252b33"/>
+      <g font-size="13" font-weight="700" fill="#f5f7fa">
         <text x="16" y="25">Date</text>
         <text x="164" y="25">Token volume</text>
         <text x="390" y="25">Total</text>
@@ -87,21 +87,21 @@
         <text x="910" y="25">Cache hit</text>
         <text x="1030" y="25">Credits</text>
       </g>
-      <g font-size="13" fill="#151a22">
-        <line x1="0" x2="1166" y1="40" y2="40" stroke="#d7dce2"/>
+      <g font-size="13" fill="#f5f7fa">
+        <line x1="0" x2="1166" y1="40" y2="40" stroke="#333a45"/>
         <text x="16" y="66">2026-05-24</text>
-        <rect x="164" y="56" width="140" height="8" rx="4" fill="#e4e7ec"/>
-        <rect x="164" y="56" width="140" height="8" rx="4" fill="#1f6feb"/>
+        <rect x="164" y="56" width="140" height="8" rx="4" fill="#252b33"/>
+        <rect x="164" y="56" width="140" height="8" rx="4" fill="#58a6ff"/>
         <text x="390" y="66">336,000</text>
         <text x="510" y="66">310,000</text>
         <text x="640" y="66">133,000</text>
         <text x="780" y="66">26,000</text>
         <text x="910" y="66">42.9%</text>
         <text x="1030" y="66">37.34</text>
-        <line x1="0" x2="1166" y1="82" y2="82" stroke="#d7dce2"/>
+        <line x1="0" x2="1166" y1="82" y2="82" stroke="#333a45"/>
         <text x="16" y="108">2026-05-23</text>
-        <rect x="164" y="98" width="140" height="8" rx="4" fill="#e4e7ec"/>
-        <rect x="164" y="98" width="66" height="8" rx="4" fill="#1f6feb"/>
+        <rect x="164" y="98" width="140" height="8" rx="4" fill="#252b33"/>
+        <rect x="164" y="98" width="66" height="8" rx="4" fill="#58a6ff"/>
         <text x="390" y="108">156,800</text>
         <text x="510" y="108">145,000</text>
         <text x="640" y="108">96,000</text>
@@ -111,11 +111,11 @@
       </g>
     </g>
 
-    <text x="0" y="692" font-size="18" font-weight="700" fill="#151a22">Projects</text>
+    <text x="0" y="692" font-size="18" font-weight="700" fill="#f5f7fa">Projects</text>
     <g transform="translate(0 710)">
-      <rect width="1166" height="74" rx="8" fill="#fff" stroke="#d7dce2"/>
-      <rect width="1166" height="40" rx="8" fill="#eef1f4"/>
-      <g font-size="13" font-weight="700" fill="#344054">
+      <rect width="1166" height="74" rx="8" fill="#181b20" stroke="#333a45"/>
+      <rect width="1166" height="40" rx="8" fill="#252b33"/>
+      <g font-size="13" font-weight="700" fill="#f5f7fa">
         <text x="16" y="25">Project</text>
         <text x="310" y="25">Threads</text>
         <text x="430" y="25">Tokens</text>
@@ -123,9 +123,9 @@
         <text x="710" y="25">Credits</text>
         <text x="850" y="25">USD</text>
       </g>
-      <g font-size="13" fill="#151a22">
-        <line x1="0" x2="1166" y1="40" y2="40" stroke="#d7dce2"/>
-        <text x="16" y="64">codex-usage-tracker</text>
+      <g font-size="13" fill="#f5f7fa">
+        <line x1="0" x2="1166" y1="40" y2="40" stroke="#333a45"/>
+        <text x="16" y="64">ai-coding-usage-tracker</text>
         <text x="310" y="64">2</text>
         <text x="430" y="64">336,000</text>
         <text x="570" y="64">42.9%</text>
@@ -134,6 +134,6 @@
       </g>
     </g>
 
-    <text x="0" y="806" font-size="13" fill="#667085">Built by SuvenSeo for developers who want local visibility into AI coding usage.</text>
+    <text x="0" y="806" font-size="13" fill="#a8b0bd">Built by SuvenSeo for developers who want local visibility into AI coding usage.</text>
   </g>
 </svg>

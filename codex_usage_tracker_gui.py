@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Windows GUI launcher for packaged Codex Usage Tracker builds."""
+"""Windows GUI launcher for packaged AI Coding Usage Tracker builds."""
 
 from __future__ import annotations
 

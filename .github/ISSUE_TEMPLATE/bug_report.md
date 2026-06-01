@@ -13,14 +13,14 @@ Describe the bug and what you expected instead.
 ## Command
 
 ```bash
-codex-usage-tracker ...
+ai-coding-usage-tracker ...
 ```
 
 ## Environment
 
 - OS:
 - Python version:
-- Codex Usage Tracker version or commit:
+- AI Coding Usage Tracker version or commit:
 - Codex app or CLI source:
 
 ## Safe Output
@@ -28,7 +28,7 @@ codex-usage-tracker ...
 Paste safe output from:
 
 ```bash
-codex-usage-tracker --redact --hash-projects doctor
+ai-coding-usage-tracker --redact --hash-projects doctor
 ```
 
 Do not paste private prompts, responses, local paths, API keys, or raw Codex logs.

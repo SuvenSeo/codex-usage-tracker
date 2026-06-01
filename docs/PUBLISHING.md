@@ -5,7 +5,8 @@ This project is ready for a normal PyPI trusted publishing setup.
 Current state:
 
 - `v0.1.1` is published as a GitHub Release.
-- The release includes `CodexUsageTracker.exe` and a SHA256 checksum asset.
+- The Windows release asset is now built as `AICodingUsageTracker.exe` with a
+  SHA256 checksum asset.
 - PyPI trusted publishing is configured and working.
 - `codex-usage-tracker` is published on PyPI:
   `https://pypi.org/project/codex-usage-tracker/`.
@@ -45,7 +46,7 @@ Use these exact values:
 ```text
 PyPI project name: codex-usage-tracker
 Owner: SuvenSeo
-Repository name: codex-usage-tracker
+Repository name: ai-coding-usage-tracker
 Workflow filename: release.yml
 Environment name: pypi
 ```
@@ -53,9 +54,9 @@ Environment name: pypi
 These match the claims emitted by the GitHub workflow:
 
 ```text
-sub: repo:SuvenSeo/codex-usage-tracker:environment:pypi
-repository: SuvenSeo/codex-usage-tracker
-workflow_ref: SuvenSeo/codex-usage-tracker/.github/workflows/release.yml@refs/heads/main
+sub: repo:SuvenSeo/ai-coding-usage-tracker:environment:pypi
+repository: SuvenSeo/ai-coding-usage-tracker
+workflow_ref: SuvenSeo/ai-coding-usage-tracker/.github/workflows/release.yml@refs/heads/main
 environment: pypi
 ```
 
@@ -67,10 +68,10 @@ Before publishing a new tag, test the GitHub source install from a clean
 virtual environment:
 
 ```powershell
-$tmp = Join-Path $env:TEMP "codex-usage-tracker-install-check"
+$tmp = Join-Path $env:TEMP "ai-coding-usage-tracker-install-check"
 Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 python -m venv $tmp
 & "$tmp\Scripts\python.exe" -m pip install --upgrade pip
 & "$tmp\Scripts\python.exe" -m pip install codex-usage-tracker
-& "$tmp\Scripts\codex-usage-tracker.exe" --output-dir "$tmp\demo" demo
+& "$tmp\Scripts\ai-coding-usage-tracker.exe" --output-dir "$tmp\demo" demo
 ```

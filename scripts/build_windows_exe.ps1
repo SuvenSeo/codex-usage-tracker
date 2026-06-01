@@ -5,7 +5,7 @@ $DistDir = Join-Path $Root "dist"
 $WorkDir = Join-Path $Root "build\pyinstaller"
 $SpecDir = Join-Path $Root "build\pyinstaller"
 $Launcher = Join-Path $Root "codex_usage_tracker_gui.py"
-$ExePath = Join-Path $DistDir "CodexUsageTracker.exe"
+$ExePath = Join-Path $DistDir "AICodingUsageTracker.exe"
 
 if (-not (Test-Path -LiteralPath $Launcher)) {
     throw "Missing GUI launcher: $Launcher"
@@ -24,7 +24,7 @@ try {
         --clean `
         --onefile `
         --windowed `
-        --name CodexUsageTracker `
+        --name AICodingUsageTracker `
         --distpath $DistDir `
         --workpath $WorkDir `
         --specpath $SpecDir `

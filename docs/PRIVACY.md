@@ -9,6 +9,8 @@ This tool is designed to be local-first.
 - Claude Code project JSONL files under `~/.claude/projects`, when selected with `--sources claude` or `--sources all`
 - Cursor AI tracking metadata from `~/.cursor/ai-tracking/ai-code-tracking.db`, when selected with `--sources cursor` or `--sources all`
 - WakaTime config presence from `~/.wakatime.cfg`, only to verify that an API key exists
+- Optional admin-key environment variable presence for `OPENAI_ADMIN_KEY`,
+  `ANTHROPIC_ADMIN_KEY`, and `CURSOR_ADMIN_API_KEY`
 
 ## What It Writes
 
@@ -34,7 +36,7 @@ The repository `.gitignore` excludes generated reports by default. Review report
 Use:
 
 ```bash
-codex-usage-tracker --redact --hash-projects report
+ai-coding-usage-tracker --redact --hash-projects report
 ```
 
 `--redact` hides thread titles, local folders, and log paths. `--hash-projects` replaces project names with stable anonymous labels.
@@ -42,13 +44,13 @@ codex-usage-tracker --redact --hash-projects report
 For multi-source reports, use:
 
 ```bash
-codex-usage-tracker --sources all --redact --hash-projects report
+ai-coding-usage-tracker --sources all --redact --hash-projects report
 ```
 
 For issue reports, prefer:
 
 ```bash
-codex-usage-tracker --redact --hash-projects doctor
+ai-coding-usage-tracker --redact --hash-projects doctor
 ```
 
 ## WakaTime Sync
@@ -63,3 +65,14 @@ When `sync-wakatime` is enabled, the tool sends WakaTime heartbeats with:
 It does not send token counts, prompts, responses, or transcript content to WakaTime.
 WakaTime sync currently sends Codex-derived activity only; Claude Code and Cursor
 records stay in local reports.
+
+## Official Billing Connectors
+
+`ai-coding-usage-tracker billing` is status-only by default. It reports whether
+supported provider admin-key environment variables are configured, but it does
+not print key values.
+
+`ai-coding-usage-tracker billing --fetch` makes explicit HTTPS requests to the
+configured provider APIs for account-side cost/spend information. Use it only
+with admin keys you are allowed to use. The command prints summarized status and
+amounts, not secrets.
