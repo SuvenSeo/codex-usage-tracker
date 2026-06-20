@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## v0.2.3 - 2026-06-20
+
+- Fixed a GUI startup crash (`bad screen distance "0 24"`) caused by invalid
+  `padx` on a `tk.Frame` in the redesigned overview hero row.
+- Capped large GUI tables (threads/projects/daily) so the desktop app stays
+  responsive with thousands of local sessions; status bar notes when data is
+  truncated and HTML report still includes the full dataset.
+
 ## v0.2.2 - 2026-06-20
 
 - Added Claude-style **context cache replay estimates** for Cursor from local

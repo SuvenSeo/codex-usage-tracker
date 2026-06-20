@@ -184,6 +184,41 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertGreater(cursor_row["lifetime_tokens"], 0)
         self.assertEqual(model["pricing"]["source_date"], tracker.PRICING_SOURCE_DATE)
 
+    def test_gui_view_model_caps_large_tables(self):
+        threads = [
+            {
+                "thread_id": f"thread-{index}",
+                "title": f"Thread {index}",
+                "cwd": f"/tmp/project-{index % 3}",
+                "project": f"project-{index % 3}",
+                "app": "codex",
+                "source": "codex",
+                "model": "gpt-5.4",
+                "reasoning_effort": "",
+                "cli_version": "",
+                "path": f"/tmp/thread-{index}.jsonl",
+                "line_count": 1,
+                "event_count": 1,
+                "request_count": 1,
+                "started_at": datetime(2026, 6, 1, tzinfo=timezone.utc),
+                "ended_at": datetime(2026, 6, 20, tzinfo=timezone.utc),
+                "usage": {"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 10},
+                "daily_usage": {"2026-06-20": {"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 10}},
+                "event_timestamps": [datetime(2026, 6, 20, tzinfo=timezone.utc)],
+                "active_seconds": 60,
+                "active_daily": {"2026-06-20": 60},
+                "tool_counts": {},
+                "estimated_codex_credits": 1.0,
+                "estimated_api_usd_equiv": 0.1,
+            }
+            for index in range(500)
+        ]
+        summary = tracker.aggregate_threads(threads)
+        model = tracker.build_gui_view_model(threads, summary)
+
+        self.assertEqual(len(model["tables"]["threads"]["rows"]), tracker.GUI_TABLE_ROW_LIMITS["threads"])
+        self.assertEqual(model["truncated_tables"]["threads"], (tracker.GUI_TABLE_ROW_LIMITS["threads"], 500))
+
     def test_dashboard_html_uses_dark_theme_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             threads = tracker.demo_threads()

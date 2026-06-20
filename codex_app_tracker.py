@@ -42,7 +42,7 @@ except Exception:  # pragma: no cover - Python without zoneinfo support.
     ZoneInfo = None  # type: ignore[assignment]
 
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 TRACKER_DIR = Path(__file__).resolve().parent
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_CLAUDE_HOME = Path.home() / ".claude"
@@ -127,6 +127,11 @@ GUI_FONTS = {
     "body": ("Segoe UI", 10),
     "caption": ("Segoe UI", 9),
     "mono": ("Consolas", 9),
+}
+GUI_TABLE_ROW_LIMITS: dict[str, int] = {
+    "threads": 400,
+    "projects": 150,
+    "daily": 90,
 }
 
 # Rates verified against official OpenAI/Anthropic pages on 2026-05-31.
@@ -2388,6 +2393,19 @@ def build_gui_view_model(
         ),
     ]
 
+    truncated_tables: dict[str, tuple[int, int]] = {}
+
+    def limit_gui_rows(table_key: str, rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+        limit = GUI_TABLE_ROW_LIMITS.get(table_key)
+        if limit is not None and len(rows) > limit:
+            truncated_tables[table_key] = (limit, len(rows))
+            return rows[:limit]
+        return rows
+
+    daily_rows = limit_gui_rows("daily", daily_rows)
+    project_rows = limit_gui_rows("projects", project_rows)
+    thread_rows = limit_gui_rows("threads", thread_rows)
+
     return {
         "generated_at": fmt_dt(summary["generated_at"], report_tz),
         "latest_activity": fmt_dt(latest_activity, report_tz) if latest_activity else "(none)",
@@ -2416,6 +2434,7 @@ def build_gui_view_model(
         ],
         "provider_summaries": provider_summaries,
         "combined_totals": combined_totals,
+        "truncated_tables": truncated_tables,
         "charts": {
             "sources": [
                 {
@@ -4921,6 +4940,17 @@ class CodexUsageTrackerGui:
         shell.content = content
         return shell
 
+    def _widget_bg(self, parent: Any, bg: str | None = None) -> str:
+        if bg:
+            return bg
+        try:
+            value = parent.cget("bg")
+            if value:
+                return str(value)
+        except Exception:
+            pass
+        return self.theme["bg"]
+
     def _label(
         self,
         parent: Any,
@@ -4935,7 +4965,7 @@ class CodexUsageTrackerGui:
         kwargs: dict[str, Any] = {
             "font": font,
             "fg": color or self.theme["ink"],
-            "bg": bg or parent.cget("bg"),
+            "bg": self._widget_bg(parent, bg),
         }
         if textvariable is not None:
             kwargs["textvariable"] = textvariable
@@ -5042,8 +5072,8 @@ class CodexUsageTrackerGui:
             ("threads", "Threads", GUI_FONTS["metric"]),
         ]
         for index, (key, label, font) in enumerate(hero_specs):
-            cell = tk.Frame(hero_metrics, bg=self.theme["card"], padx=(0, 24))
-            cell.grid(row=0, column=index, sticky="w")
+            cell = tk.Frame(hero_metrics, bg=self.theme["card"])
+            cell.grid(row=0, column=index, sticky="w", padx=(0, 24))
             self._label(cell, label, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["card"]).pack(anchor="w")
             value = tk.StringVar(value="—")
             self.combined_metric_vars[key] = value
@@ -5305,7 +5335,15 @@ class CodexUsageTrackerGui:
         self.draw_chart(self.chart_canvases["projects"], model["charts"]["projects"], chart_key="projects")
         self.draw_chart(self.chart_canvases["models"], model["charts"]["models"], chart_key="models")
         self.apply_filter()
-        self.status_var.set("Dashboard updated.")
+        status = "Dashboard updated."
+        truncated = model.get("truncated_tables") or {}
+        if truncated:
+            parts = [
+                f"{table}: showing {shown:,} of {total:,}"
+                for table, (shown, total) in truncated.items()
+            ]
+            status = f"{status} Large tables capped for responsiveness ({'; '.join(parts)}). Use HTML report for full data."
+        self.status_var.set(status)
 
     def update_provider_cards(
         self,
@@ -5495,12 +5533,15 @@ class CodexUsageTrackerGui:
             for item in tree.get_children():
                 tree.delete(item)
             visible_index = 0
-            for row in self.table_data.get(key, []):
+            rows = self.table_data.get(key, [])
+            for row in rows:
                 haystack = " ".join(str(value) for value in row).lower()
                 if not query or query in haystack:
                     tag = "even" if visible_index % 2 == 0 else "odd"
                     tree.insert("", "end", values=row, tags=(tag,))
                     visible_index += 1
+                    if visible_index % 100 == 0:
+                        self.root.update_idletasks()
 
     def close(self) -> None:
         self.closed = True
