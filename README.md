@@ -30,13 +30,15 @@ This tool gives you those answers locally, without uploading Codex transcripts t
 
 - Reads local Codex app rollout logs from `~/.codex`
 - Reads Claude Code project transcripts from `~/.claude/projects`
-- Reads Cursor AI edit activity from `~/.cursor/ai-tracking/ai-code-tracking.db`
+- Reads Cursor from Agent transcripts, Composer bubbles, `agentKv` cache, and the AI tracking DB
+- Estimates Cursor tokens with Claude-style **context cache replay** when exact counts are missing locally
 - Generates `HTML`, `CSV`, and `JSON` reports
 - Serves a live local web dashboard with auto-refresh on `127.0.0.1`
 - Shows trend bars, provider comparison tabs, budget signals, and connector status
+- Native GUI with combined lifetime totals, per-app cards, and a **Lifetime Totals** tab
 - Prints `daily`, `weekly`, `monthly`, `session`, `project`, `model`, and `source` terminal reports
 - Estimates Codex credits from input, cached input, and output tokens
-- Shows estimated USD for Codex and Claude Code where local token logs and known rates exist
+- Shows estimated USD for Codex, Claude Code, and Cursor where local token logs and known rates exist
 - Checks optional official billing connectors without printing configured keys
 - Includes `doctor` and `demo` commands for first-run confidence
 - Supports date filters with `--days`, `--since`, `--until`, and `--timezone`
@@ -127,17 +129,43 @@ an auto-selected port without launching a browser.
 Open the live native desktop dashboard:
 
 ```bash
-ai-coding-usage-tracker --sources all --days 7 --timezone Asia/Colombo gui
+ai-coding-usage-tracker --sources all gui
 ```
 
-The GUI uses Python's built-in Tkinter toolkit, polls selected local sources every 10
-seconds by default, opens in dark mode by default, includes a button to generate
-the normal `out/` HTML/CSV/JSON reports, and includes an **Open live web
-dashboard** button for the smoother browser UI. Change the interval with:
+The GUI (v0.2.2+) uses Python's built-in Tkinter toolkit and polls selected local
+sources every 10 seconds by default. It opens in dark mode, shows:
+
+- **Overview** — combined lifetime hero, Codex / Claude / Cursor cards with cached
+  token breakdown, quick stats, and app/daily charts
+- **Lifetime Totals** — full provider table plus project/model charts
+- **Apps, Daily, Projects, Models, Threads, Signals, Billing** — sortable tables
+
+The packaged Windows EXE defaults to `--sources all`. The first Cursor refresh can
+take up to a minute while local transcripts and cache blobs are scanned.
+
+Buttons include **Refresh now**, **HTML report**, and **Open live web dashboard**.
+Change the refresh interval with:
 
 ```bash
 ai-coding-usage-tracker gui --refresh-seconds 5
 ```
+
+After rebuilding the EXE, update Desktop and Start Menu shortcuts:
+
+```powershell
+.\scripts\build_windows_exe.ps1
+.\scripts\install_windows_app.ps1
+```
+
+Close the running app first if the install step reports the EXE is in use.
+
+Try a safe public demo:
+
+```bash
+ai-coding-usage-tracker demo
+```
+
+That writes synthetic reports to `out/demo/`.
 
 Build a double-clickable Windows EXE:
 
@@ -162,14 +190,6 @@ Start Menu plus Desktop shortcuts. Remove it with:
 ```powershell
 .\scripts\uninstall_windows_app.ps1
 ```
-
-Try a safe public demo:
-
-```bash
-ai-coding-usage-tracker demo
-```
-
-That writes synthetic reports to `out/demo/`.
 
 ## CLI Reports
 
@@ -202,10 +222,11 @@ ai-coding-usage-tracker --sources all source-audit
 ```
 
 The audit writes `out/source_audit.json` and `out/source_audit.md`. It separates
-exact local metrics from estimates and blocked sources. For example, Cursor's
-legacy `state.vscdb` daily stats can show historical suggested/accepted line
-counts, but not exact Cursor tokens, credits, or spend. Vendor admin APIs can
-provide deeper billing detail only when the matching admin key is configured.
+exact local metrics from estimates and blocked sources. Cursor token totals are
+estimated from local Agent transcripts, Composer bubbles, and `agentKv` blobs
+with context-cache replay (similar in spirit to Claude's cache-read accounting).
+Vendor admin APIs can provide deeper billing detail only when the matching admin
+key is configured.
 
 Check optional official billing connector status:
 
@@ -284,7 +305,11 @@ Cost estimates are not an invoice:
 
 - `estimated_codex_credits` uses OpenAI's current Codex token-based rate card for Codex records.
 - `estimated_api_usd_equiv` uses public OpenAI API standard short-context prices for Codex and Anthropic token prices for Claude Code when known local model rates exist.
-- Cursor local AI tracking exposes AI edit activity, request counts, models, timestamps, and active time, but not exact token totals.
+- **Cursor** totals are **estimates** from local logs: Agent transcripts under
+  `~/.cursor/projects`, Composer bubbles and `agentKv` blobs in Cursor's
+  `state.vscdb`, plus AI edit activity from `~/.cursor/ai-tracking`. When Cursor
+  stores zero token counts, the tracker estimates from character length and
+  applies context-cache replay so cached input is visible like Claude Code.
 - The included rates were verified against official OpenAI and Anthropic docs on 2026-05-31.
 - Real billing/credit balance, fast-mode uplifts, taxes, and any workspace exceptions should be checked with the vendor.
 
@@ -293,7 +318,9 @@ Pricing can change. The current source pages are OpenAI's [Codex rate card](http
 ## Privacy
 
 This is a local parser. Depending on `--sources`, it reads from `~/.codex`,
-`~/.claude/projects`, and/or `~/.cursor/ai-tracking`. It writes local reports.
+`~/.claude/projects`, `~/.cursor/projects` (Agent transcripts),
+`%APPDATA%\Cursor\User\globalStorage\state.vscdb` (Composer/agent cache), and/or
+`~/.cursor/ai-tracking`. It writes local reports.
 
 Use `--redact` to hide thread titles, local folders, and log paths. Use `--hash-projects` to replace project names with stable anonymous labels.
 
@@ -342,8 +369,9 @@ Built by [SuvenSeo](https://github.com/SuvenSeo) for developers who want local v
 ## Status
 
 Early alpha. Codex, Claude Code, and Cursor local storage formats may change, so
-parser compatibility can break. The `v0.2.0` GitHub release adds multi-source
-reports. The Python package is published on
+parser compatibility can break. **v0.2.2** adds Cursor context-cache token
+estimates and a redesigned native GUI with combined lifetime totals. The Python
+package is published on
 [PyPI](https://pypi.org/project/codex-usage-tracker/) and can be installed with
 `pipx install codex-usage-tracker` or `python -m pip install codex-usage-tracker`.
 Issues and PRs are welcome.

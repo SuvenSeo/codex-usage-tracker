@@ -169,9 +169,8 @@ class CodexUsageTrackerTests(unittest.TestCase):
         model = tracker.build_gui_view_model(threads, summary)
 
         metrics = dict(model["metrics"])
-        self.assertIn("Total tokens", metrics)
+        self.assertIn("All apps lifetime tokens", metrics)
         self.assertEqual(metrics["Threads"], "5")
-        self.assertEqual(metrics["Apps"], "3")
         self.assertTrue(model["tables"]["sources"]["rows"])
         self.assertTrue(model["tables"]["daily"]["rows"])
         self.assertTrue(model["tables"]["projects"]["rows"])
@@ -179,7 +178,10 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertTrue(model["tables"]["threads"]["rows"])
         self.assertTrue(model["tables"]["alerts"]["rows"])
         self.assertTrue(model["tables"]["billing"]["rows"])
-        self.assertEqual(model["token_delta"], "")
+        self.assertTrue(model["tables"]["providers"]["rows"])
+        self.assertTrue(model["provider_summaries"])
+        cursor_row = next(row for row in model["provider_summaries"] if row["app_key"] == "cursor")
+        self.assertGreater(cursor_row["lifetime_tokens"], 0)
         self.assertEqual(model["pricing"]["source_date"], tracker.PRICING_SOURCE_DATE)
 
     def test_dashboard_html_uses_dark_theme_by_default(self):
@@ -216,7 +218,8 @@ class CodexUsageTrackerTests(unittest.TestCase):
 
     def test_gui_theme_is_dark_default(self):
         self.assertEqual(tracker.DARK_THEME["mode"], "dark")
-        self.assertEqual(tracker.DARK_THEME["bg"], "#101114")
+        self.assertEqual(tracker.DARK_THEME["bg"], "#0b0c0f")
+        self.assertIn("codex", tracker.GUI_APP_ACCENTS)
         self.assertEqual(tracker.GUI_CHART_COLORS["daily"], tracker.DARK_THEME["blue"])
 
     def test_gui_view_model_uses_shared_privacy_path(self):
@@ -329,7 +332,11 @@ class CodexUsageTrackerTests(unittest.TestCase):
             con.commit()
             con.close()
 
-            threads = tracker.load_cursor_threads(db)
+            threads = tracker.load_cursor_threads(
+                db,
+                cursor_state_db=Path(tmp) / "missing-state.vscdb",
+                cursor_projects_home=Path(tmp) / "missing-projects",
+            )
 
             self.assertEqual(len(threads), 1)
             self.assertEqual(threads[0]["app"], "cursor")
@@ -337,6 +344,48 @@ class CodexUsageTrackerTests(unittest.TestCase):
             self.assertEqual(threads[0]["event_count"], 2)
             self.assertEqual(threads[0]["request_count"], 2)
             self.assertEqual(threads[0]["usage"]["total_tokens"], 0)
+
+    def test_cursor_transcript_parser_estimates_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects_home = Path(tmp) / "projects" / "c-demo-project" / "agent-transcripts" / "conv-123"
+            projects_home.mkdir(parents=True)
+            transcript = projects_home / "conv-123.jsonl"
+            rows = [
+                {
+                    "role": "user",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "<user_query>Fix the parser</user_query>"},
+                        ],
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "I'll update the parser now."},
+                            {"type": "tool_use", "name": "Read", "input": {"path": "codex_app_tracker.py"}},
+                        ],
+                    },
+                    "model": "claude-sonnet-4-6",
+                },
+            ]
+            transcript.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+            threads = tracker.load_cursor_threads(
+                Path(tmp) / "missing-tracking.db",
+                cursor_state_db=Path(tmp) / "missing-state.vscdb",
+                cursor_projects_home=Path(tmp) / "projects",
+            )
+
+            self.assertEqual(len(threads), 1)
+            self.assertEqual(threads[0]["app"], "cursor")
+            self.assertEqual(threads[0]["source"], "cursor_transcript")
+            self.assertGreater(threads[0]["usage"]["input_tokens"], 0)
+            self.assertGreater(threads[0]["usage"]["output_tokens"], 0)
+            self.assertGreaterEqual(threads[0]["usage"]["cached_input_tokens"], 0)
+            self.assertGreater(threads[0]["estimated_api_usd_equiv"], 0)
+            self.assertEqual(threads[0]["tool_counts"].get("Read"), 1)
 
     def test_cursor_daily_stats_reads_state_db(self):
         with tempfile.TemporaryDirectory() as tmp:

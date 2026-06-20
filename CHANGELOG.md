@@ -4,19 +4,22 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
-- Added a dependency-free `serve` command for a live local web dashboard with
-  browser auto-refresh.
-- Upgraded the generated dashboard with trend bars, budget signals, provider
-  comparison tabs, official connector status, clearable search, and
-  micro-interactions.
-- Added optional official billing connector checks for OpenAI, Anthropic, and
-  Cursor admin keys.
-- Added native GUI polish with signal/billing tabs and an **Open live web
-  dashboard** handoff.
-- Rebranded the public project to AI Coding Usage Tracker while keeping the
-  existing PyPI package name for compatibility.
-- Added `ai-coding-usage-tracker` as the preferred console command while
-  retaining `codex-usage-tracker` as a legacy alias.
+## v0.2.2 - 2026-06-20
+
+- Added Claude-style **context cache replay estimates** for Cursor from local
+  Agent transcripts, Composer bubbles, and `agentKv` blobs in `state.vscdb`.
+- Cursor now reports lifetime **input, cached, output, and total tokens** in
+  CLI, GUI, CSV, and JSON alongside Codex and Claude Code.
+- Redesigned the native GUI with clearer hierarchy: combined lifetime hero,
+  per-app accent cards, quick stats strip, and a **Lifetime Totals** tab.
+- Added combined all-apps lifetime/today totals across Codex, Claude, and Cursor.
+- Improved chart label truncation, table zebra striping, and dark-theme polish.
+- Windows EXE defaults to `--sources all`; reinstall with
+  `scripts/install_windows_app.ps1` after rebuilding.
+
+## v0.2.1
+
+- Cursor token parsing improvements and packaged GUI defaulting to all sources.
 
 ## v0.2.0 - 2026-05-30
 

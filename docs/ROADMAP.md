@@ -20,7 +20,10 @@ Already implemented in the repo:
 - Terminal reports for daily, weekly, monthly, session, project, model, and source views.
 - Opt-in multi-source reports with `--sources all`.
 - Claude Code JSONL parsing from `~/.claude/projects`.
-- Cursor AI tracking DB parsing from `~/.cursor/ai-tracking/ai-code-tracking.db`.
+- Cursor parsing from Agent transcripts, Composer bubbles, `agentKv` cache, and
+  the AI tracking DB with context-cache token estimates.
+- Combined all-apps lifetime and today totals in CLI and GUI.
+- Redesigned native GUI (v0.2.2): hero banner, per-app cards, Lifetime Totals tab.
 - `doctor` and `demo` first-run commands.
 - `--redact` and `--hash-projects` privacy controls.
 - Optional WakaTime `ai coding` heartbeat sync.

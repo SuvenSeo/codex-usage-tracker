@@ -42,7 +42,7 @@ except Exception:  # pragma: no cover - Python without zoneinfo support.
     ZoneInfo = None  # type: ignore[assignment]
 
 
-VERSION = "0.2.0"
+VERSION = "0.2.2"
 TRACKER_DIR = Path(__file__).resolve().parent
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_CLAUDE_HOME = Path.home() / ".claude"
@@ -51,6 +51,10 @@ DEFAULT_CURSOR_STATE_DB = (
     Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
     / "Cursor" / "User" / "globalStorage" / "state.vscdb"
 )
+DEFAULT_CURSOR_PROJECTS_HOME = Path.home() / ".cursor" / "projects"
+CURSOR_CHARS_PER_TOKEN_ESTIMATE = 4.0
+CURSOR_WORKSPACE_PATH_RE = re.compile(r"Workspace Path:\s*(.+?)(?:\n|$)", re.IGNORECASE)
+CURSOR_TIMESTAMP_TAG_RE = re.compile(r"<timestamp>(.+?)</timestamp>", re.IGNORECASE | re.DOTALL)
 DEFAULT_OUTPUT_DIR = Path.cwd() / "out"
 DEFAULT_STATE_FILE = Path.home() / ".codex-usage-tracker" / "state.json"
 PRICING_SOURCE_DATE = "2026-05-31"
@@ -85,25 +89,44 @@ SOURCE_LABELS = {
 }
 DARK_THEME = {
     "mode": "dark",
-    "bg": "#101114",
-    "panel": "#181b20",
-    "panel_alt": "#20242b",
-    "field": "#111418",
-    "ink": "#f5f7fa",
-    "muted": "#a8b0bd",
-    "subtle": "#252b33",
-    "border": "#333a45",
-    "blue": "#58a6ff",
-    "green": "#36c58c",
-    "amber": "#f1b84b",
-    "rose": "#ff7b72",
-    "selected": "#2f81f7",
+    "bg": "#0b0c0f",
+    "panel": "#12141a",
+    "panel_alt": "#181b22",
+    "card": "#151820",
+    "card_hover": "#1a1e28",
+    "field": "#0f1116",
+    "ink": "#eef2f7",
+    "muted": "#8b95a5",
+    "subtle": "#1e222b",
+    "border": "#2a3140",
+    "border_soft": "#1f2430",
+    "blue": "#5eb3ff",
+    "green": "#3ecf8e",
+    "amber": "#e7b86a",
+    "rose": "#f07178",
+    "selected": "#3b82f6",
+    "hero": "#f8fafc",
+}
+GUI_APP_ACCENTS = {
+    "codex": "#9d7cff",
+    "claude": "#f59e6c",
+    "cursor": "#36cfe8",
+    "all": "#64748b",
 }
 GUI_CHART_COLORS = {
-    "sources": "#a78bfa",
+    "sources": GUI_APP_ACCENTS["codex"],
     "daily": DARK_THEME["blue"],
     "projects": DARK_THEME["green"],
     "models": DARK_THEME["amber"],
+}
+GUI_FONTS = {
+    "title": ("Segoe UI", 20, "bold"),
+    "hero": ("Segoe UI Semibold", 26, "bold"),
+    "section": ("Segoe UI Semibold", 11, "bold"),
+    "metric": ("Segoe UI Semibold", 13, "bold"),
+    "body": ("Segoe UI", 10),
+    "caption": ("Segoe UI", 9),
+    "mono": ("Consolas", 9),
 }
 
 # Rates verified against official OpenAI/Anthropic pages on 2026-05-31.
@@ -162,6 +185,18 @@ MODEL_RATES: dict[str, dict[str, dict[str, float]]] = {
     },
     "claude-haiku-3-5": {
         "anthropic_usd": {"input": 0.80, "cache_creation": 1.0, "cache_creation_1h": 1.6, "cached_input": 0.08, "output": 4.0},
+    },
+    "cursor-auto": {
+        "cursor_usd": {"input": 1.25, "cached_input": 0.25, "output": 6.0},
+    },
+    "composer-1": {
+        "cursor_usd": {"input": 1.25, "cached_input": 0.25, "output": 6.0},
+    },
+    "composer-2": {
+        "cursor_usd": {"input": 1.25, "cached_input": 0.25, "output": 6.0},
+    },
+    "composer-2.5": {
+        "cursor_usd": {"input": 1.25, "cached_input": 0.25, "output": 6.0},
     },
 }
 
@@ -380,7 +415,7 @@ def pricing_metadata() -> dict[str, Any]:
         "anthropic_pricing_url": ANTHROPIC_PRICING_URL,
         "cursor_pricing_url": CURSOR_PRICING_URL,
         "api_pricing_basis": API_PRICING_BASIS,
-        "caveat": "Codex credits and Claude USD are estimated from local token logs and official token rates. Cursor activity comes from local app data, but official billing, remaining credits, fast mode uplifts, taxes, and plan exceptions must be checked with the vendor.",
+        "caveat": "Codex credits and Claude USD are estimated from local token logs and official token rates. Cursor totals include Claude-style context cache replay estimates from Agent transcripts, composer bubbles, and agentKv blobs (character-based when exact counts are missing). Official billing, remaining credits, fast mode uplifts, taxes, and plan exceptions must be checked with the vendor.",
     }
 
 
@@ -728,9 +763,600 @@ def load_claude_threads(claude_home: Path, days: int | None = None, report_tz: A
     return sorted(threads, key=lambda item: item.get("ended_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
 
-def load_cursor_threads(cursor_db: Path, days: int | None = None, report_tz: Any = None) -> list[dict[str, Any]]:
+def cursor_model_name(model: str | None) -> str:
+    normalized = normalize_model(model)
+    if not normalized or normalized in {"default", "none", "auto"}:
+        return "cursor-auto"
+    return normalized
+
+
+def estimate_tokens_from_chars(chars: int) -> int:
+    if chars <= 0:
+        return 0
+    return max(1, int(chars / CURSOR_CHARS_PER_TOKEN_ESTIMATE))
+
+
+def cursor_message_usage_with_context(
+    role: str | None,
+    text: str,
+    context_tokens: int,
+    *,
+    assistant_replays_context: bool = True,
+) -> tuple[dict[str, int], int]:
+    """Estimate per-message usage with Claude-style context cache replay."""
+    usage = zero_usage()
+    if not text:
+        return usage, context_tokens
+    tokens = estimate_tokens_from_chars(len(text))
+    if role == "user":
+        usage["cached_input_tokens"] = context_tokens
+        usage["input_tokens"] = context_tokens + tokens
+        context_tokens += tokens
+    elif role == "assistant":
+        if assistant_replays_context and context_tokens > 0:
+            usage["cached_input_tokens"] = context_tokens
+            usage["input_tokens"] = context_tokens
+        usage["output_tokens"] = tokens
+        context_tokens += tokens
+    elif role in {"system", "tool"}:
+        usage["input_tokens"] = tokens
+        context_tokens += tokens
+    else:
+        return usage, context_tokens
+    usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+    return usage, context_tokens
+
+
+def parse_cursor_agentkv_blob(value: Any) -> tuple[str, str]:
+    raw = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+    text = raw.strip()
+    if not text:
+        return "", ""
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            role = str(data.get("role") or "")
+            content = data.get("content")
+            if isinstance(content, str):
+                return role or "assistant", content
+            if isinstance(content, list):
+                return role or "user", extract_cursor_message_text({"message": {"content": content}})
+    if not cursor_blob_is_mostly_text(text):
+        return "", ""
+    if "MASTER PROMPT" in text[:200] or text.startswith("You are "):
+        return "system", text
+    return "assistant", text
+
+
+def cursor_state_db_for_agentkv(cursor_state_db: Path) -> Path:
+  backup = cursor_state_db.parent / f"{cursor_state_db.name}.backup"
+  if backup.exists():
+      return backup
+  return cursor_state_db
+
+
+def cursor_blob_is_mostly_text(text: str) -> bool:
+    if not text or len(text) > 250_000:
+        return False
+    sample = text[:8000]
+    printable = sum(1 for char in sample if char.isprintable() or char in "\n\r\t")
+    if printable / max(len(sample), 1) < 0.92:
+        return False
+    if "\x00" in text[:200]:
+        return False
+    return True
+
+
+def cursor_text_from_agentkv_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return extract_cursor_message_text({"message": {"content": content}})
+    return str(content or "")
+
+
+def cursor_estimated_usd(usage: dict[str, int], model: str | None) -> float:
+    resolved = cursor_model_name(model)
+    for rate_kind in ("cursor_usd", "anthropic_usd", "api_usd_standard_short"):
+        amount = estimate_amount(usage, resolved, rate_kind)
+        if amount:
+            return amount
+    for known in MODEL_RATES:
+        if resolved.startswith(known):
+            for rate_kind in ("cursor_usd", "anthropic_usd", "api_usd_standard_short"):
+                amount = estimate_amount(usage, known, rate_kind)
+                if amount:
+                    return amount
+    return estimate_amount(usage, "cursor-auto", "cursor_usd") or 0.0
+
+
+def decode_sqlite_json_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def open_readonly_sqlite(path: Path, *, allow_backup: bool = False) -> sqlite3.Connection | None:
+    candidates = [path]
+    if allow_backup:
+        backup = path.parent / f"{path.name}.backup"
+        if backup.exists():
+            candidates.append(backup)
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        for uri_flags in ("?mode=ro&immutable=1", "?mode=ro"):
+            try:
+                return sqlite3.connect(f"file:{candidate}{uri_flags}", uri=True, timeout=3)
+            except Exception:
+                continue
+    return None
+
+
+def extract_cursor_workspace_path(text: str) -> str:
+    match = CURSOR_WORKSPACE_PATH_RE.search(text or "")
+    if not match:
+        return ""
+    return clean_windows_path(match.group(1).strip())
+
+
+def cursor_project_label_from_folder(folder_name: str) -> str:
+    text = str(folder_name or "").strip()
+    if not text:
+        return "Cursor workspace"
+    if text.isdigit():
+        return f"cursor-project-{text}"
+    if text.startswith("c-"):
+        parts = text[2:].split("-")
+        for marker in ("Documents", "Projects", "Desktop"):
+            if marker in parts:
+                idx = parts.index(marker)
+                tail = parts[idx + 1 :]
+                if tail:
+                    return "-".join(tail)
+        if len(parts) >= 3:
+            return "-".join(parts[-3:])
+    return text
+
+
+def extract_cursor_message_text(row: dict[str, Any]) -> str:
+    content = row.get("message", {}).get("content", [])
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            parts.append(str(block.get("text") or ""))
+        elif block_type == "tool_use":
+            parts.append(json.dumps(block.get("input") or {}, default=str, ensure_ascii=False))
+    return "\n".join(part for part in parts if part)
+
+
+def parse_cursor_timestamp_tag(text: str) -> datetime | None:
+    match = CURSOR_TIMESTAMP_TAG_RE.search(text or "")
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    try:
+        normalized = raw.replace(" (UTC", "+00:00").replace("UTC+5:30)", "+05:30")
+        if normalized.endswith(")"):
+            normalized = normalized[:-1]
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def make_cursor_thread(
+    *,
+    conversation_id: str,
+    title: str,
+    cwd: str,
+    model: str,
+    source: str,
+    path: str,
+    usage: dict[str, int],
+    daily_usage: dict[str, dict[str, int]],
+    timestamps: list[datetime],
+    event_count: int,
+    request_count: int,
+    report_tz: Any = None,
+    token_basis: str = "",
+) -> dict[str, Any]:
+    active_seconds, active_daily = estimate_active_seconds(timestamps, report_tz=report_tz)
+    started_at = min(timestamps) if timestamps else None
+    ended_at = max(timestamps) if timestamps else None
+    resolved_model = cursor_model_name(model)
+    thread = {
+        "thread_id": f"cursor-{conversation_id}",
+        "title": title,
+        "cwd": cwd,
+        "project": project_name_from_cwd(cwd) if cwd else "Cursor workspace",
+        "app": "cursor",
+        "source": source,
+        "model": resolved_model,
+        "reasoning_effort": "",
+        "cli_version": "",
+        "path": path,
+        "line_count": event_count,
+        "event_count": event_count,
+        "request_count": request_count,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "usage": usage,
+        "daily_usage": daily_usage,
+        "event_timestamps": timestamps,
+        "active_seconds": active_seconds,
+        "active_daily": active_daily,
+        "tool_counts": {
+            "ai_code_events": event_count,
+            "requests": request_count,
+        },
+        "estimated_codex_credits": 0.0,
+        "estimated_api_usd_equiv": cursor_estimated_usd(usage, resolved_model),
+    }
+    if token_basis:
+        thread["cursor_token_basis"] = token_basis
+    return thread
+
+
+def cursor_transcript_conversation_id(path: Path, projects_home: Path) -> str:
+    try:
+        relative = path.relative_to(projects_home)
+    except ValueError:
+        relative = path
+    return relative.with_suffix("").as_posix().replace("/", "--")
+
+
+def parse_cursor_transcript_file(path: Path, projects_home: Path, report_tz: Any = None) -> dict[str, Any] | None:
+    conversation_id = cursor_transcript_conversation_id(path, projects_home)
+    project_folder = ""
+    for part in path.parts:
+        if part == "agent-transcripts" and path.parts.index(part) > 0:
+            project_folder = path.parts[path.parts.index(part) - 1]
+            break
+
+    cwd = ""
+    title = f"Cursor Agent {conversation_id[-8:]}"
+    model_counts: Counter[str] = Counter()
+    tool_counts: Counter[str] = Counter()
+    timestamps: list[datetime] = []
+    total_usage = zero_usage()
+    daily_usage: dict[str, dict[str, int]] = defaultdict(zero_usage)
+    turn_user_chars = 0
+    turn_assistant_chars = 0
+    turn_timestamp: datetime | None = None
+    event_count = 0
+    request_count = 0
+
+    fallback_mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+
+    def add_message_usage(role: str | None, text: str, ts: datetime | None) -> None:
+        nonlocal request_count, context_tokens
+        if not text:
+            return
+        message_usage, context_tokens = cursor_message_usage_with_context(role, text, context_tokens)
+        if usage_total(message_usage) == 0:
+            return
+        add_usage(total_usage, message_usage)
+        request_count += 1
+        event_ts = ts or turn_timestamp or fallback_mtime
+        timestamps.append(event_ts)
+        day = local_day(event_ts, report_tz)
+        add_usage(daily_usage[day], message_usage)
+
+    context_tokens = 0
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            event_count += 1
+            role = row.get("role")
+            text = extract_cursor_message_text(row)
+            if role == "user":
+                if not cwd:
+                    cwd = extract_cursor_workspace_path(text)
+                turn_timestamp = parse_cursor_timestamp_tag(text) or turn_timestamp
+            row_ts = parse_cursor_timestamp_tag(text) if role == "user" else None
+            add_message_usage(role, text, row_ts)
+            if role == "assistant":
+                for block in row.get("message", {}).get("content", []) or []:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_name = str(block.get("name") or "tool")
+                        tool_counts[tool_name] += 1
+            model_name = str(row.get("model") or row.get("modelName") or "")
+            if model_name:
+                model_counts[model_name] += 1
+
+    if usage_total(total_usage) == 0:
+        return None
+
+    model = model_counts.most_common(1)[0][0] if model_counts else "cursor-auto"
+    if project_folder and not cwd:
+        cwd = cursor_project_label_from_folder(project_folder)
+    thread = make_cursor_thread(
+        conversation_id=conversation_id,
+        title=title,
+        cwd=cwd,
+        model=model,
+        source="cursor_transcript",
+        path=str(path),
+        usage=total_usage,
+        daily_usage=dict(daily_usage),
+        timestamps=timestamps or [fallback_mtime],
+        event_count=event_count,
+        request_count=max(request_count, 1),
+        report_tz=report_tz,
+        token_basis="context_cache_estimated",
+    )
+    thread["tool_counts"].update(dict(tool_counts))
+    return thread
+
+
+def load_cursor_transcript_threads(
+    projects_home: Path,
+    days: int | None = None,
+    report_tz: Any = None,
+) -> dict[str, dict[str, Any]]:
+    if not projects_home.exists():
+        return {}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    threads: dict[str, dict[str, Any]] = {}
+    for path in sorted(projects_home.rglob("*.jsonl")):
+        if "agent-transcripts" not in path.parts:
+            continue
+        try:
+            thread = parse_cursor_transcript_file(path, projects_home, report_tz=report_tz)
+        except Exception as exc:
+            print(f"warning: could not parse {path}: {exc}", file=sys.stderr)
+            continue
+        if not thread:
+            continue
+        ended_at = thread.get("ended_at")
+        if cutoff and isinstance(ended_at, datetime) and ended_at < cutoff:
+            continue
+        conversation_id = cursor_transcript_conversation_id(path, projects_home)
+        threads[conversation_id] = thread
+    return threads
+
+
+def load_cursor_bubble_threads(
+    cursor_state_db: Path,
+    *,
+    days: int | None = None,
+    report_tz: Any = None,
+) -> dict[str, dict[str, Any]]:
+    con = open_readonly_sqlite(cursor_state_db, allow_backup=True)
+    if con is None:
+        return {}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    raw_groups: dict[str, dict[str, Any]] = {}
+    try:
+        tables = {
+            row[0]
+            for row in con.execute("select name from sqlite_master where type='table'").fetchall()
+        }
+        if "cursorDiskKV" not in tables:
+            con.close()
+            return {}
+
+        for key, value in con.execute(
+            "select key, value from cursorDiskKV where key like 'bubbleId:%'"
+        ):
+            parts = str(key).split(":")
+            if len(parts) < 3:
+                continue
+            conversation_id = parts[1]
+            try:
+                data = decode_sqlite_json_value(value)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+
+            text = str(data.get("text") or "")
+            if not text:
+                continue
+            group = raw_groups.setdefault(conversation_id, {
+                "bubbles": [],
+                "cwd": "",
+                "title": f"Cursor chat {conversation_id[:8]}",
+            })
+            if not group["cwd"]:
+                group["cwd"] = extract_cursor_workspace_path(text)
+            created_at = parse_epoch_timestamp(data.get("createdAt"))
+            group["bubbles"].append({
+                "text": text,
+                "bubble_type": data.get("type"),
+                "token_count": data.get("tokenCount") or {},
+                "created_at": created_at,
+                "model_name": (data.get("modelInfo") or {}).get("modelName"),
+            })
+    except Exception as exc:
+        print(f"warning: could not read {cursor_state_db}: {exc}", file=sys.stderr)
+    finally:
+        con.close()
+
+    threads: dict[str, dict[str, Any]] = {}
+    for conversation_id, group in raw_groups.items():
+        usage = zero_usage()
+        daily_usage: dict[str, dict[str, int]] = defaultdict(zero_usage)
+        timestamps: list[datetime] = []
+        model_counts: Counter[str] = Counter()
+        context_tokens = 0
+        request_count = 0
+        event_count = len(group["bubbles"])
+        token_basis = "context_cache_estimated"
+
+        for bubble in sorted(
+            group["bubbles"],
+            key=lambda item: (
+                item["created_at"] or datetime.min.replace(tzinfo=timezone.utc),
+                str(item["bubble_type"] or ""),
+            ),
+        ):
+            text = str(bubble["text"] or "")
+            bubble_type = bubble["bubble_type"]
+            role = "user" if bubble_type == 1 else "assistant"
+            tc = bubble["token_count"] or {}
+            inp = int(tc.get("inputTokens") or 0)
+            out = int(tc.get("outputTokens") or 0)
+            if inp or out:
+                bubble_usage = zero_usage()
+                if role == "user":
+                    bubble_usage["cached_input_tokens"] = context_tokens
+                    bubble_usage["input_tokens"] = context_tokens + inp
+                    context_tokens += inp
+                else:
+                    if context_tokens > 0:
+                        bubble_usage["cached_input_tokens"] = context_tokens
+                        bubble_usage["input_tokens"] = context_tokens
+                    bubble_usage["output_tokens"] = out
+                    context_tokens += out
+                bubble_usage["total_tokens"] = bubble_usage["input_tokens"] + bubble_usage["output_tokens"]
+                token_basis = "bubble_explicit"
+            else:
+                bubble_usage, context_tokens = cursor_message_usage_with_context(role, text, context_tokens)
+
+            if usage_total(bubble_usage) == 0:
+                continue
+            add_usage(usage, bubble_usage)
+            request_count += 1
+            created_at = bubble["created_at"]
+            if created_at:
+                timestamps.append(created_at)
+                day = local_day(created_at, report_tz)
+                add_usage(daily_usage[day], bubble_usage)
+            model_name = bubble.get("model_name")
+            if model_name:
+                model_counts[str(model_name)] += 1
+
+        if usage_total(usage) == 0:
+            continue
+        ended_at = max(timestamps) if timestamps else None
+        if cutoff and ended_at and ended_at < cutoff:
+            continue
+        model = model_counts.most_common(1)[0][0] if model_counts else "cursor-auto"
+        threads[f"bubble-{conversation_id}"] = make_cursor_thread(
+            conversation_id=f"bubble-{conversation_id}",
+            title=group["title"],
+            cwd=group["cwd"],
+            model=model,
+            source="cursor_bubble",
+            path=str(cursor_state_db),
+            usage=usage,
+            daily_usage=dict(daily_usage),
+            timestamps=timestamps or [datetime.now(timezone.utc)],
+            event_count=event_count,
+            request_count=max(request_count, 1),
+            report_tz=report_tz,
+            token_basis=token_basis,
+        )
+    return threads
+
+
+def load_cursor_agentkv_threads(
+    cursor_state_db: Path,
+    *,
+    days: int | None = None,
+    report_tz: Any = None,
+) -> dict[str, dict[str, Any]]:
+    agentkv_db = cursor_state_db_for_agentkv(cursor_state_db)
+    con = open_readonly_sqlite(agentkv_db, allow_backup=False)
+    if con is None:
+        return {}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    usage = zero_usage()
+    daily_usage: dict[str, dict[str, int]] = defaultdict(zero_usage)
+    timestamps: list[datetime] = []
+    context_tokens = 0
+    request_count = 0
+    event_count = 0
+
+    try:
+        tables = {
+            row[0]
+            for row in con.execute("select name from sqlite_master where type='table'").fetchall()
+        }
+        if "cursorDiskKV" not in tables:
+            con.close()
+            return {}
+
+        for _key, value in con.execute(
+            "select key, value from cursorDiskKV where key like 'agentKv:blob:%' order by key"
+        ):
+            role, text = parse_cursor_agentkv_blob(value)
+            if not text or role not in {"user", "assistant", "system", "tool"}:
+                continue
+            event_count += 1
+            if role in {"user", "system"} and context_tokens > 0:
+                context_tokens = 0
+            message_usage, context_tokens = cursor_message_usage_with_context(role, text, context_tokens)
+            if usage_total(message_usage) == 0:
+                continue
+            add_usage(usage, message_usage)
+            request_count += 1
+            event_ts = datetime.now(timezone.utc)
+            timestamps.append(event_ts)
+            day = local_day(event_ts, report_tz)
+            add_usage(daily_usage[day], message_usage)
+    except Exception as exc:
+        print(f"warning: could not read Cursor agentKv from {cursor_state_db}: {exc}", file=sys.stderr)
+    finally:
+        con.close()
+
+    if usage_total(usage) == 0:
+        return {}
+
+    ended_at = max(timestamps) if timestamps else datetime.now(timezone.utc)
+    if cutoff and ended_at < cutoff:
+        return {}
+
+    thread = make_cursor_thread(
+        conversation_id="agentkv-context-estimate",
+        title="Cursor agent context cache estimate",
+        cwd="",
+        model="cursor-auto",
+        source="cursor_agentkv",
+        path=str(agentkv_db),
+        usage=usage,
+        daily_usage=dict(daily_usage),
+        timestamps=timestamps or [ended_at],
+        event_count=event_count,
+        request_count=max(request_count, 1),
+        report_tz=report_tz,
+        token_basis="context_cache_estimated",
+    )
+    return {"agentkv-context-estimate": thread}
+
+
+def load_cursor_tracking_map(
+    cursor_db: Path,
+    days: int | None = None,
+    report_tz: Any = None,
+) -> dict[str, dict[str, Any]]:
     if not cursor_db.exists():
-        return []
+        return {}
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
     groups: dict[str, dict[str, Any]] = {}
@@ -748,19 +1374,26 @@ def load_cursor_threads(cursor_db: Path, days: int | None = None, report_tz: Any
                     summaries[str(conversation_id)] = str(title)
         if "ai_code_hashes" not in tables:
             con.close()
-            return []
+            return {}
 
-        rows = con.execute(
+        hash_columns = {
+            row[1] for row in con.execute("pragma table_info(ai_code_hashes)").fetchall()
+        }
+        if "fileName" in hash_columns:
+            select_sql = """
+                select conversationId, requestId, timestamp, source, fileExtension, fileName, model
+                from ai_code_hashes
+                order by timestamp
             """
-            select conversationId, requestId, timestamp, source, fileExtension, model
-            from ai_code_hashes
-            order by timestamp
+        else:
+            select_sql = """
+                select conversationId, requestId, timestamp, source, fileExtension, null, model
+                from ai_code_hashes
+                order by timestamp
             """
-        )
-        for conversation_id, request_id, timestamp, source, file_extension, model in rows:
+        for conversation_id, request_id, timestamp, source, file_extension, file_name, model in con.execute(select_sql):
             conversation_id = str(conversation_id or request_id or f"cursor-{timestamp}")
             group = groups.setdefault(conversation_id, {
-                "thread_id": f"cursor-{conversation_id}",
                 "conversation_id": conversation_id,
                 "timestamps": [],
                 "requests": set(),
@@ -768,6 +1401,7 @@ def load_cursor_threads(cursor_db: Path, days: int | None = None, report_tz: Any
                 "source_counts": Counter(),
                 "extension_counts": Counter(),
                 "line_count": 0,
+                "cwd": "",
             })
             ts = parse_epoch_timestamp(timestamp)
             if ts:
@@ -780,13 +1414,15 @@ def load_cursor_threads(cursor_db: Path, days: int | None = None, report_tz: Any
                 group["extension_counts"][str(file_extension)] += 1
             if model:
                 group["model_counts"][str(model)] += 1
+            if file_name and not group["cwd"]:
+                group["cwd"] = clean_windows_path(str(Path(str(file_name)).parent))
             group["line_count"] += 1
         con.close()
     except Exception as exc:
         print(f"warning: could not read {cursor_db}: {exc}", file=sys.stderr)
-        return []
+        return {}
 
-    threads: list[dict[str, Any]] = []
+    threads: dict[str, dict[str, Any]] = {}
     for group in groups.values():
         timestamps = list(group["timestamps"])
         if not timestamps:
@@ -795,43 +1431,164 @@ def load_cursor_threads(cursor_db: Path, days: int | None = None, report_tz: Any
         ended_at = max(timestamps)
         if cutoff and ended_at < cutoff:
             continue
+        conversation_id = group["conversation_id"]
         model_counts: Counter[str] = group["model_counts"]
         source_counts: Counter[str] = group["source_counts"]
-        active_seconds, active_daily = estimate_active_seconds(timestamps, report_tz=report_tz)
-        conversation_id = group["conversation_id"]
         model = model_counts.most_common(1)[0][0] if model_counts else ""
         source = source_counts.most_common(1)[0][0] if source_counts else "cursor"
         request_count = len(group["requests"]) or group["line_count"]
-        threads.append({
-            "thread_id": group["thread_id"],
-            "title": summaries.get(conversation_id) or f"Cursor AI edits {conversation_id[:8]}",
-            "cwd": "",
-            "project": "Cursor AI edits",
-            "app": "cursor",
-            "source": f"cursor_{source}",
-            "model": model,
-            "reasoning_effort": "",
-            "cli_version": "",
-            "path": str(cursor_db),
-            "line_count": group["line_count"],
-            "event_count": group["line_count"],
-            "request_count": request_count,
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "usage": zero_usage(),
-            "daily_usage": {},
-            "event_timestamps": timestamps,
-            "active_seconds": active_seconds,
-            "active_daily": active_daily,
-            "tool_counts": {
-                "ai_code_events": group["line_count"],
-                "requests": request_count,
-            },
-            "estimated_codex_credits": 0.0,
-            "estimated_api_usd_equiv": 0.0,
-        })
+        cwd = group.get("cwd") or ""
+        threads[conversation_id] = make_cursor_thread(
+            conversation_id=conversation_id,
+            title=summaries.get(conversation_id) or f"Cursor AI edits {conversation_id[:8]}",
+            cwd=cwd,
+            model=model or "cursor-auto",
+            source=f"cursor_{source}",
+            path=str(cursor_db),
+            usage=zero_usage(),
+            daily_usage={},
+            timestamps=timestamps,
+            event_count=group["line_count"],
+            request_count=request_count,
+            report_tz=report_tz,
+            token_basis="activity_only",
+        )
+    return threads
 
-    return sorted(threads, key=lambda item: item.get("ended_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+def max_usage(target: dict[str, int], candidate: dict[str, int]) -> None:
+    for field in USAGE_FIELDS:
+        target[field] = max(int(target.get(field, 0)), int(candidate.get(field, 0)))
+
+
+def merge_cursor_thread_maps(
+    *maps: dict[str, dict[str, Any]],
+    report_tz: Any = None,
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    token_threads_by_uuid: dict[str, str] = {}
+
+    def register_uuid(thread: dict[str, Any], merge_key: str) -> None:
+        for uuid in re.findall(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            str(thread.get("thread_id") or merge_key),
+            re.IGNORECASE,
+        ):
+            if usage_total(thread.get("usage") or {}) > 0:
+                token_threads_by_uuid[uuid.lower()] = merge_key
+
+    def attach_tracking_metadata(existing: dict[str, Any], thread: dict[str, Any]) -> None:
+        existing["event_count"] = max(int(existing.get("event_count") or 0), int(thread.get("event_count") or 0))
+        existing["request_count"] = max(int(existing.get("request_count") or 0), int(thread.get("request_count") or 0))
+        existing["line_count"] = max(int(existing.get("line_count") or 0), int(thread.get("line_count") or 0))
+        if thread.get("title") and (
+            not existing.get("title")
+            or str(existing.get("title", "")).startswith("Cursor ")
+        ):
+            existing["title"] = thread["title"]
+        if thread.get("cwd") and not existing.get("cwd"):
+            existing["cwd"] = thread["cwd"]
+            existing["project"] = project_name_from_cwd(thread["cwd"])
+        for tool, count in (thread.get("tool_counts") or {}).items():
+            existing_tools = existing.setdefault("tool_counts", {})
+            existing_tools[tool] = int(existing_tools.get(tool, 0)) + int(count)
+        all_timestamps = list(existing.get("event_timestamps") or []) + list(thread.get("event_timestamps") or [])
+        if all_timestamps:
+            active_seconds, active_daily = estimate_active_seconds(all_timestamps, report_tz=report_tz)
+            existing["event_timestamps"] = sorted(set(all_timestamps))
+            existing["started_at"] = min(all_timestamps)
+            existing["ended_at"] = max(all_timestamps)
+            existing["active_seconds"] = active_seconds
+            existing["active_daily"] = active_daily
+
+    for thread_map in maps:
+        for conversation_id, thread in thread_map.items():
+            merge_key = conversation_id
+            thread_usage = usage_total(thread.get("usage") or {})
+            if thread_usage == 0:
+                target_key = ""
+                for uuid in re.findall(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                    conversation_id,
+                    re.IGNORECASE,
+                ):
+                    target_key = token_threads_by_uuid.get(uuid.lower(), "")
+                    if target_key:
+                        break
+                if target_key and target_key in merged:
+                    attach_tracking_metadata(merged[target_key], thread)
+                    continue
+                merge_key = f"tracking-{conversation_id}"
+
+            existing = merged.get(merge_key)
+            if existing is None:
+                merged[merge_key] = thread
+                register_uuid(thread, merge_key)
+                continue
+
+            existing_source = str(existing.get("source") or "")
+            incoming_source = str(thread.get("source") or "")
+            if thread_usage > 0 and existing_source != incoming_source:
+                if "agentkv" in {existing_source, incoming_source}:
+                    if thread_usage > usage_total(existing.get("usage") or {}):
+                        existing["usage"] = dict(thread["usage"])
+                        existing["daily_usage"] = dict(thread.get("daily_usage") or {})
+                        existing["estimated_api_usd_equiv"] = thread.get("estimated_api_usd_equiv") or 0.0
+                        existing["source"] = incoming_source or existing_source
+                        existing["cursor_token_basis"] = thread.get("cursor_token_basis") or existing.get("cursor_token_basis")
+                else:
+                    max_usage(existing["usage"], thread.get("usage") or zero_usage())
+                    for day, usage in (thread.get("daily_usage") or {}).items():
+                        daily_usage = existing.setdefault("daily_usage", {})
+                        if day not in daily_usage:
+                            daily_usage[day] = zero_usage()
+                        max_usage(daily_usage[day], usage)
+                    existing["estimated_api_usd_equiv"] = max(
+                        float(existing.get("estimated_api_usd_equiv") or 0.0),
+                        float(thread.get("estimated_api_usd_equiv") or 0.0),
+                    )
+                existing["cursor_token_basis"] = "context_cache_estimated"
+            elif thread_usage > usage_total(existing.get("usage") or {}):
+                existing["usage"] = dict(thread["usage"])
+                existing["daily_usage"] = dict(thread.get("daily_usage") or {})
+                existing["estimated_api_usd_equiv"] = thread.get("estimated_api_usd_equiv") or 0.0
+                existing["source"] = incoming_source or existing_source
+                existing["cursor_token_basis"] = thread.get("cursor_token_basis") or existing.get("cursor_token_basis")
+                if thread.get("model"):
+                    existing["model"] = thread["model"]
+
+            attach_tracking_metadata(existing, thread)
+            register_uuid(existing, merge_key)
+
+    return sorted(
+        merged.values(),
+        key=lambda item: item.get("ended_at") or item.get("started_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+
+def load_cursor_threads(
+    cursor_db: Path,
+    *,
+    cursor_state_db: Path | None = None,
+    cursor_projects_home: Path | None = None,
+    days: int | None = None,
+    report_tz: Any = None,
+) -> list[dict[str, Any]]:
+    projects_home = cursor_projects_home or DEFAULT_CURSOR_PROJECTS_HOME
+    state_db = cursor_state_db or DEFAULT_CURSOR_STATE_DB
+
+    transcript_threads = load_cursor_transcript_threads(projects_home, days=days, report_tz=report_tz)
+    bubble_threads = load_cursor_bubble_threads(state_db, days=days, report_tz=report_tz)
+    agentkv_threads = load_cursor_agentkv_threads(state_db, days=days, report_tz=report_tz)
+    tracking_threads = load_cursor_tracking_map(cursor_db, days=days, report_tz=report_tz)
+    return merge_cursor_thread_maps(
+        transcript_threads,
+        bubble_threads,
+        agentkv_threads,
+        tracking_threads,
+        report_tz=report_tz,
+    )
 
 
 def read_cursor_daily_stats(cursor_state_db: Path) -> list[dict[str, Any]]:
@@ -891,7 +1648,15 @@ def load_selected_threads(args: argparse.Namespace, report_tz: Any = None) -> li
     if "claude" in sources:
         threads.extend(load_claude_threads(Path(args.claude_home).expanduser(), days=args.days, report_tz=report_tz))
     if "cursor" in sources:
-        threads.extend(load_cursor_threads(Path(args.cursor_db).expanduser(), days=args.days, report_tz=report_tz))
+        threads.extend(
+            load_cursor_threads(
+                Path(args.cursor_db).expanduser(),
+                cursor_state_db=Path(args.cursor_state_db).expanduser(),
+                cursor_projects_home=Path(args.cursor_projects_home).expanduser(),
+                days=args.days,
+                report_tz=report_tz,
+            )
+        )
     return sorted(
         threads,
         key=lambda item: item.get("ended_at") or item.get("started_at") or datetime.min.replace(tzinfo=timezone.utc),
@@ -1120,6 +1885,8 @@ def aggregate_threads(threads: list[dict[str, Any]]) -> dict[str, Any]:
                 day_row["estimated_api_usd_equiv"] += estimate_amount(day_usage, model, "api_usd_standard_short") or 0.0
             elif app == "claude":
                 day_row["estimated_api_usd_equiv"] += estimate_amount(day_usage, model, "anthropic_usd") or 0.0
+            elif app == "cursor":
+                day_row["estimated_api_usd_equiv"] += cursor_estimated_usd(day_usage, model)
             day_row["threads"].add(thread["thread_id"])
 
         for day, seconds in thread.get("active_daily", {}).items():
@@ -1370,6 +2137,112 @@ def latest_thread_activity(threads: list[dict[str, Any]]) -> datetime | None:
     return latest
 
 
+def app_label_to_key(label: str) -> str:
+    for key, app_label_value in SOURCE_LABELS.items():
+        if app_label_value == label:
+            return key
+    return normalize_app(label)
+
+
+def estimate_app_day_usd(app: str, usage: dict[str, int], model: str | None) -> float:
+    if app == "codex":
+        return estimate_amount(usage, model, "api_usd_standard_short") or 0.0
+    if app == "claude":
+        return estimate_amount(usage, model, "anthropic_usd") or 0.0
+    if app == "cursor":
+        return cursor_estimated_usd(usage, model)
+    return 0.0
+
+
+def build_provider_summaries(
+    threads: list[dict[str, Any]],
+    summary: dict[str, Any],
+    report_tz: Any = None,
+) -> list[dict[str, Any]]:
+    today = local_day(datetime.now(timezone.utc), report_tz)
+    today_usage: dict[str, dict[str, int]] = {app: zero_usage() for app in SUPPORTED_SOURCES}
+    today_usd: dict[str, float] = {app: 0.0 for app in SUPPORTED_SOURCES}
+
+    for thread in threads:
+        app = thread_app(thread)
+        if app not in today_usage:
+            continue
+        model = thread.get("model")
+        for day, usage in (thread.get("daily_usage") or {}).items():
+            if day != today:
+                continue
+            add_usage(today_usage[app], usage)
+            today_usd[app] += estimate_app_day_usd(app, usage, model)
+
+    source_by_app: dict[str, dict[str, Any]] = {}
+    for row in summary.get("sources", []):
+        source_by_app[app_label_to_key(str(row.get("app") or ""))] = row
+
+    providers: list[dict[str, Any]] = []
+    for app in SUPPORTED_SOURCES:
+        row = source_by_app.get(app, {})
+        usage = row.get("usage") or zero_usage()
+        lifetime_tokens = usage_total(usage)
+        today_usage_row = today_usage.get(app, zero_usage())
+        if app == "codex":
+            token_basis = "exact"
+        elif app == "claude":
+            token_basis = "exact"
+        elif app == "cursor":
+            token_basis = "context_cache_estimated" if lifetime_tokens else "activity_only"
+        else:
+            token_basis = "unknown"
+        providers.append({
+            "app": app_label(app),
+            "app_key": app,
+            "lifetime_tokens": lifetime_tokens,
+            "lifetime_input_tokens": int(usage.get("input_tokens", 0)),
+            "lifetime_cached_tokens": int(usage.get("cached_input_tokens", 0)),
+            "lifetime_output_tokens": int(usage.get("output_tokens", 0)),
+            "today_tokens": usage_total(today_usage_row),
+            "today_input_tokens": int(today_usage_row.get("input_tokens", 0)),
+            "today_output_tokens": int(today_usage_row.get("output_tokens", 0)),
+            "lifetime_usd": float(row.get("estimated_api_usd_equiv") or 0.0),
+            "today_usd": today_usd.get(app, 0.0),
+            "lifetime_credits": float(row.get("estimated_codex_credits") or 0.0),
+            "threads": int(row.get("thread_count") or 0),
+            "requests": int(row.get("request_count") or 0),
+            "events": int(row.get("event_count") or 0),
+            "active_seconds": int(row.get("active_seconds") or 0),
+            "active_minutes": minutes(int(row.get("active_seconds") or 0)),
+            "token_basis": token_basis,
+        })
+    return providers
+
+
+def build_combined_totals(summary: dict[str, Any], provider_summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    usage = summary.get("usage") or zero_usage()
+    today_tokens = sum(int(row.get("today_tokens") or 0) for row in provider_summaries)
+    today_input = sum(int(row.get("today_input_tokens") or 0) for row in provider_summaries)
+    today_output = sum(int(row.get("today_output_tokens") or 0) for row in provider_summaries)
+    today_usd = sum(float(row.get("today_usd") or 0.0) for row in provider_summaries)
+    return {
+        "app": "All Apps Combined",
+        "app_key": "all",
+        "lifetime_tokens": usage_total(usage),
+        "lifetime_input_tokens": int(usage.get("input_tokens", 0)),
+        "lifetime_cached_tokens": int(usage.get("cached_input_tokens", 0)),
+        "lifetime_output_tokens": int(usage.get("output_tokens", 0)),
+        "today_tokens": today_tokens,
+        "today_input_tokens": today_input,
+        "today_output_tokens": today_output,
+        "lifetime_usd": float(summary.get("estimated_api_usd_equiv") or 0.0),
+        "today_usd": today_usd,
+        "lifetime_credits": float(summary.get("estimated_codex_credits") or 0.0),
+        "threads": int(summary.get("thread_count") or 0),
+        "requests": int(summary.get("request_count") or 0),
+        "events": int(summary.get("event_count") or 0),
+        "active_seconds": int(summary.get("active_seconds") or 0),
+        "active_minutes": minutes(int(summary.get("active_seconds") or 0)),
+        "token_basis": "mixed",
+    }
+
+
 def build_gui_view_model(
     threads: list[dict[str, Any]],
     summary: dict[str, Any],
@@ -1387,6 +2260,9 @@ def build_gui_view_model(
     top_model = summary["models"][0]["model"] if summary["models"] else "(none)"
     alerts = summary.get("alerts") or build_usage_alerts(summary)
     billing_connectors = summary.get("billing_connectors") or build_billing_connectors(fetch=False)
+    provider_summaries = build_provider_summaries(threads, summary, report_tz=report_tz)
+    combined_totals = build_combined_totals(summary, provider_summaries)
+    provider_today_tokens = {row["app_key"]: row["today_tokens"] for row in provider_summaries}
 
     daily_rows = [
         (
@@ -1474,6 +2350,44 @@ def build_gui_view_model(
         for row in summary.get("sources", [])
     ]
 
+    provider_rows = [
+        (
+            row["app"],
+            number(row["lifetime_tokens"]),
+            number(row["lifetime_input_tokens"]),
+            number(row["lifetime_cached_tokens"]),
+            number(row["lifetime_output_tokens"]),
+            number(row["today_tokens"]),
+            f"${number(row['lifetime_usd'])}",
+            f"${number(row['today_usd'])}",
+            number(row["lifetime_credits"]),
+            number(row["threads"]),
+            number(row["requests"]),
+            number(row["events"]),
+            row["active_minutes"],
+            row["token_basis"],
+        )
+        for row in provider_summaries
+    ]
+    lifetime_rows = provider_rows + [
+        (
+            combined_totals["app"],
+            number(combined_totals["lifetime_tokens"]),
+            number(combined_totals["lifetime_input_tokens"]),
+            number(combined_totals["lifetime_cached_tokens"]),
+            number(combined_totals["lifetime_output_tokens"]),
+            number(combined_totals["today_tokens"]),
+            f"${number(combined_totals['lifetime_usd'])}",
+            f"${number(combined_totals['today_usd'])}",
+            number(combined_totals["lifetime_credits"]),
+            number(combined_totals["threads"]),
+            number(combined_totals["requests"]),
+            number(combined_totals["events"]),
+            combined_totals["active_minutes"],
+            combined_totals["token_basis"],
+        ),
+    ]
+
     return {
         "generated_at": fmt_dt(summary["generated_at"], report_tz),
         "latest_activity": fmt_dt(latest_activity, report_tz) if latest_activity else "(none)",
@@ -1484,25 +2398,35 @@ def build_gui_view_model(
         "alerts": alerts,
         "billing_connectors": billing_connectors,
         "metrics": [
+            ("All apps lifetime tokens", number(combined_totals["lifetime_tokens"])),
+            ("Codex lifetime tokens", number(next((row["lifetime_tokens"] for row in provider_summaries if row["app_key"] == "codex"), 0))),
+            ("Claude lifetime tokens", number(next((row["lifetime_tokens"] for row in provider_summaries if row["app_key"] == "claude"), 0))),
+            ("Cursor lifetime tokens", number(next((row["lifetime_tokens"] for row in provider_summaries if row["app_key"] == "cursor"), 0))),
+            ("All apps today tokens", number(combined_totals["today_tokens"])),
             ("Threads", number(summary["thread_count"])),
-            ("Apps", number(len(summary.get("sources", [])))),
-            ("Total tokens", number(total_tokens)),
-            ("Estimated Codex credits", number(summary["estimated_codex_credits"])),
-            ("Estimated USD", f"${number(summary['estimated_api_usd_equiv'])}"),
-            ("Estimated active time", f"{minutes(summary['active_seconds'])} min"),
+            ("Estimated USD (lifetime)", f"${number(combined_totals['lifetime_usd'])}"),
+            ("Estimated USD (today)", f"${number(combined_totals['today_usd'])}"),
+            ("Estimated Codex credits", number(combined_totals["lifetime_credits"])),
+            ("Estimated active time", f"{combined_totals['active_minutes']} min"),
             ("Events", number(summary.get("event_count", 0))),
             ("Requests", number(summary.get("request_count", 0))),
             ("Top app", top_app),
             ("Top project", top_project),
             ("Top model", top_model),
-            ("Cache hit rate", percent(cache_hit_rate(summary["usage"]))),
-            ("Output share", percent(output_ratio(summary["usage"]))),
-            ("Budget alerts", number(sum(1 for alert in alerts if alert.get("severity") in {"risk", "warn"}))),
-            ("Billing connectors", number(sum(1 for row in billing_connectors if row.get("status") in {"configured", "fetched"}))),
         ],
+        "provider_summaries": provider_summaries,
+        "combined_totals": combined_totals,
         "charts": {
             "sources": [
-                {"label": row["app"], "value": usage_total(row["usage"]) or int(row.get("event_count") or 0), "detail": f"{row['thread_count']} threads"}
+                {
+                    "label": row["app"],
+                    "value": usage_total(row["usage"]),
+                    "detail": (
+                        f"{number(provider_today_tokens.get(app_label_to_key(row['app']), 0))} today"
+                        if provider_today_tokens.get(app_label_to_key(row["app"]), 0)
+                        else f"{row['thread_count']} threads"
+                    ),
+                }
                 for row in summary.get("sources", [])[:6]
             ],
             "daily": [
@@ -1519,6 +2443,25 @@ def build_gui_view_model(
             ],
         },
         "tables": {
+            "providers": {
+                "columns": (
+                    ("app", "App"),
+                    ("lifetime_tokens", "Lifetime tokens"),
+                    ("lifetime_input", "Lifetime input"),
+                    ("lifetime_cached", "Lifetime cached"),
+                    ("lifetime_output", "Lifetime output"),
+                    ("today_tokens", "Today tokens"),
+                    ("lifetime_usd", "Lifetime USD"),
+                    ("today_usd", "Today USD"),
+                    ("credits", "Codex credits"),
+                    ("threads", "Threads"),
+                    ("requests", "Requests"),
+                    ("events", "Events"),
+                    ("active", "Active min"),
+                    ("basis", "Token basis"),
+                ),
+                "rows": lifetime_rows,
+            },
             "sources": {
                 "columns": (
                     ("app", "App"),
@@ -2193,7 +3136,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       <span class="pill">Private reports</span>
       <span class="pill">Codex app logs</span>
       <span class="pill">Claude Code logs</span>
-      <span class="pill">Cursor activity</span>
+      <span class="pill">Cursor tokens</span>
     </div>
     <h1>AI Coding Usage Dashboard</h1>
     <p>Generated {html.escape(generated_at)} from selected local AI coding data. Estimates help with project-level usage, not official billing.</p>
@@ -2299,7 +3242,7 @@ def render_dashboard(output_path: Path, threads: list[dict[str, Any]], summary: 
       </div>
     </section>
     <div class="note">
-      Credit estimates use OpenAI's Codex token-based rate card for Codex records only, and Claude USD uses Anthropic token pricing where known local model rates exist. Cursor activity is local activity/time only, not authoritative token or billing data.
+      Credit estimates use OpenAI's Codex token-based rate card for Codex records only, Claude USD uses Anthropic token pricing where known local model rates exist, and Cursor USD uses local Agent transcript/bubble token estimates with Cursor Auto pricing when exact token counts are missing.
     </div>
   </main>
   <footer>
@@ -2825,19 +3768,42 @@ def build_source_audit(args: argparse.Namespace, report_tz: Any = None) -> dict[
         "local_path": source_path(claude_desktop_dir, redact),
     })
 
-    cursor_threads = load_cursor_threads(cursor_db, report_tz=report_tz) if cursor_db.exists() else []
+    cursor_threads = load_cursor_threads(
+        cursor_db,
+        cursor_state_db=cursor_state_db,
+        cursor_projects_home=Path(getattr(args, "cursor_projects_home", DEFAULT_CURSOR_PROJECTS_HOME)).expanduser(),
+        report_tz=report_tz,
+    ) if cursor_db.exists() or Path(getattr(args, "cursor_projects_home", DEFAULT_CURSOR_PROJECTS_HOME)).expanduser().exists() else []
     cursor_totals = audit_totals_from_threads(cursor_threads)
+    cursor_token_threads = sum(1 for thread in cursor_threads if usage_total(thread.get("usage") or {}) > 0)
     add({
-        "source": "Cursor AI tracking DB",
-        "status": "activity only" if cursor_threads else "missing local DB",
-        "records": f"{cursor_totals['threads']} parsed conversations",
+        "source": "Cursor local usage",
+        "status": "available" if cursor_threads else "missing local logs",
+        "records": f"{cursor_totals['threads']} conversations / {cursor_token_threads} with token estimates",
         "date_range": thread_range_text(cursor_threads, report_tz),
-        "exact": "AI edit activity rows, requests, models, and active-time estimate",
-        "estimated": "none",
-        "blocked": "exact tokens, credits, and spend are not exposed in this local DB",
-        "local_path": source_path(cursor_db, redact),
+        "exact": "bubble tokenCount when Cursor stores it",
+        "estimated": "Agent transcript and bubble char/4 token estimates plus Cursor Auto USD pricing",
+        "blocked": "official invoice, subscription quota, and remaining fast requests require Cursor account or admin APIs",
+        "local_path": source_path(cursor_state_db, redact),
         "docs_url": CURSOR_PRICING_URL,
         **cursor_totals,
+    })
+
+    add({
+        "source": "Cursor AI tracking DB",
+        "status": "available" if cursor_db.exists() else "missing local DB",
+        "records": "supplemental AI edit activity merged into Cursor conversations",
+        "date_range": thread_range_text(cursor_threads, report_tz),
+        "exact": "AI edit activity rows, requests, models, and active-time estimate",
+        "estimated": "merged into Cursor token threads when conversation IDs match",
+        "blocked": "does not include full chat transcripts on its own",
+        "local_path": source_path(cursor_db, redact),
+        "docs_url": CURSOR_PRICING_URL,
+        "tokens": 0,
+        "credits": 0.0,
+        "usd": 0.0,
+        "active_minutes": 0.0,
+        "threads": 0,
     })
 
     cursor_daily_stats = read_cursor_daily_stats(cursor_state_db)
@@ -3148,7 +4114,11 @@ def demo_thread(
         "estimated_api_usd_equiv": (
             estimate_amount(usage, model, "api_usd_standard_short")
             if app == "codex"
-            else estimate_amount(usage, model, "anthropic_usd") if app == "claude" else 0.0
+            else estimate_amount(usage, model, "anthropic_usd")
+            if app == "claude"
+            else cursor_estimated_usd(usage, model)
+            if app == "cursor"
+            else 0.0
         ),
     }
 
@@ -3226,15 +4196,21 @@ def demo_threads(report_tz: Any = None) -> list[dict[str, Any]]:
         ),
         demo_thread(
             "demo-cursor-ai-edits",
-            "Cursor AI edit activity",
-            "Cursor AI edits",
+            "Cursor Agent session with token estimates",
+            "C:\\Projects\\ai-coding-usage-tracker",
             "composer-2.5",
             base + timedelta(days=1, hours=3),
             28,
-            zero_usage(),
+            {
+                "input_tokens": 128_000,
+                "cached_input_tokens": 0,
+                "output_tokens": 96_400,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 224_400,
+            },
             report_tz=report_tz,
             app="cursor",
-            source="demo_cursor_ai_tracking",
+            source="demo_cursor_transcript",
             event_count=430,
             request_count=12,
         ),
@@ -3645,10 +4621,19 @@ def command_doctor(args: argparse.Namespace) -> int:
 
     cursor_threads: list[dict[str, Any]] = []
     if "cursor" in sources:
-        line("OK" if cursor_db.exists() else "FAIL", "Cursor AI tracking DB", "(redacted)" if redact else str(cursor_db))
-        if not cursor_db.exists():
+        cursor_projects_home = Path(args.cursor_projects_home).expanduser()
+        line("OK" if cursor_db.exists() else "WARN", "Cursor AI tracking DB", "(redacted)" if redact else str(cursor_db))
+        line("OK" if cursor_projects_home.exists() else "WARN", "Cursor Agent transcripts", "(redacted)" if redact else str(cursor_projects_home))
+        line("OK" if cursor_state_db.exists() else "WARN", "Cursor state DB", "(redacted)" if redact else str(cursor_state_db))
+        if not cursor_db.exists() and not cursor_projects_home.exists():
             failures += 1
-        cursor_threads = load_cursor_threads(cursor_db, days=args.days, report_tz=report_tz) if cursor_db.exists() else []
+        cursor_threads = load_cursor_threads(
+            cursor_db,
+            cursor_state_db=cursor_state_db,
+            cursor_projects_home=cursor_projects_home,
+            days=args.days,
+            report_tz=report_tz,
+        ) if cursor_db.exists() or cursor_projects_home.exists() else []
         cursor_threads = filter_threads_by_date(
             cursor_threads,
             since=getattr(args, "since", None),
@@ -3656,8 +4641,13 @@ def command_doctor(args: argparse.Namespace) -> int:
             report_tz=report_tz,
         )
         if cursor_threads:
+            token_threads = [thread for thread in cursor_threads if usage_total(thread.get("usage") or {}) > 0]
             line("OK", "Cursor parser", f"{len(cursor_threads)} conversations parsed")
-            line("WARN", "Cursor token totals", "local Cursor DB exposes AI edit activity, not exact token usage")
+            if token_threads:
+                total_tokens = sum(usage_total(thread.get("usage") or {}) for thread in token_threads)
+                line("OK", "Cursor token totals", f"{len(token_threads)} conversations / {total_tokens:,} estimated tokens")
+            else:
+                line("WARN", "Cursor token totals", "no token estimates found; check ~/.cursor/projects agent transcripts")
         else:
             line("FAIL", "Cursor parser", "no conversations parsed in the selected range")
             failures += 1
@@ -3769,40 +4759,83 @@ def apply_dark_ttk_theme(root: Any, style: Any) -> None:
     except Exception:
         pass
 
-    configure(".", background=theme["bg"], foreground=theme["ink"])
+    configure(".", background=theme["bg"], foreground=theme["ink"], font=GUI_FONTS["body"])
     configure("TFrame", background=theme["bg"])
     configure("TLabel", background=theme["bg"], foreground=theme["ink"])
-    configure("TButton", background=theme["subtle"], foreground=theme["ink"], borderwidth=1)
+    configure(
+        "TButton",
+        background=theme["panel_alt"],
+        foreground=theme["ink"],
+        borderwidth=0,
+        padding=(14, 7),
+        font=GUI_FONTS["body"],
+    )
     style_map(
         "TButton",
-        background=[("pressed", theme["border"]), ("active", theme["panel_alt"])],
+        background=[("pressed", theme["subtle"]), ("active", theme["card_hover"])],
         foreground=[("disabled", theme["muted"])],
     )
-    configure("TCheckbutton", background=theme["bg"], foreground=theme["ink"])
+    configure("Primary.TButton", background=theme["selected"], foreground="#ffffff")
+    style_map(
+        "Primary.TButton",
+        background=[("pressed", "#2563eb"), ("active", "#4f93f8")],
+        foreground=[("disabled", theme["muted"])],
+    )
+    configure("TCheckbutton", background=theme["bg"], foreground=theme["muted"], font=GUI_FONTS["caption"])
     style_map(
         "TCheckbutton",
         background=[("active", theme["bg"])],
-        foreground=[("disabled", theme["muted"])],
+        foreground=[("disabled", theme["muted"]), ("selected", theme["ink"])],
     )
-    configure("TEntry", fieldbackground=theme["field"], foreground=theme["ink"])
-    configure("TNotebook", background=theme["bg"], borderwidth=0)
-    configure("TNotebook.Tab", background=theme["subtle"], foreground=theme["muted"], padding=(12, 6))
+    configure(
+        "TEntry",
+        fieldbackground=theme["field"],
+        foreground=theme["ink"],
+        bordercolor=theme["border_soft"],
+        lightcolor=theme["border_soft"],
+        darkcolor=theme["border_soft"],
+        padding=(8, 6),
+    )
+    configure("TNotebook", background=theme["bg"], borderwidth=0, tabmargins=(0, 6, 0, 0))
+    configure(
+        "TNotebook.Tab",
+        background=theme["bg"],
+        foreground=theme["muted"],
+        padding=(14, 8),
+        font=GUI_FONTS["body"],
+        borderwidth=0,
+    )
     style_map(
         "TNotebook.Tab",
         background=[("selected", theme["panel"]), ("active", theme["panel_alt"])],
         foreground=[("selected", theme["ink"]), ("active", theme["ink"])],
     )
-    configure("TLabelframe", background=theme["bg"], foreground=theme["ink"], bordercolor=theme["border"])
-    configure("TLabelframe.Label", background=theme["bg"], foreground=theme["muted"])
+    configure(
+        "TLabelframe",
+        background=theme["bg"],
+        foreground=theme["muted"],
+        bordercolor=theme["border_soft"],
+        relief="flat",
+        borderwidth=1,
+    )
+    configure("TLabelframe.Label", background=theme["bg"], foreground=theme["muted"], font=GUI_FONTS["caption"])
     configure(
         "Treeview",
         background=theme["panel"],
         fieldbackground=theme["panel"],
         foreground=theme["ink"],
-        bordercolor=theme["border"],
-        rowheight=24,
+        bordercolor=theme["border_soft"],
+        rowheight=28,
+        font=GUI_FONTS["body"],
     )
-    configure("Treeview.Heading", background=theme["subtle"], foreground=theme["ink"], bordercolor=theme["border"])
+    configure(
+        "Treeview.Heading",
+        background=theme["panel_alt"],
+        foreground=theme["muted"],
+        bordercolor=theme["border_soft"],
+        font=GUI_FONTS["caption"],
+        relief="flat",
+    )
     style_map("Treeview", background=[("selected", theme["selected"])], foreground=[("selected", "#ffffff")])
 
 
@@ -3823,18 +4856,20 @@ class CodexUsageTrackerGui:
         self.table_widgets: dict[str, Any] = {}
         self.chart_canvases: dict[str, Any] = {}
         self.metric_vars: dict[str, Any] = {}
+        self.provider_card_vars: dict[str, dict[str, Any]] = {}
         self.web_server: DashboardTCPServer | None = None
         self.web_url: str | None = None
 
         self.root = tk.Tk()
-        self.root.title("AI Coding Usage Tracker")
-        self.root.geometry("1180x780")
-        self.root.minsize(980, 640)
+        self.root.title(f"AI Coding Usage Tracker v{VERSION}")
+        self.root.geometry("1320x860")
+        self.root.minsize(1080, 720)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
-        self.status_var = tk.StringVar(value="Loading selected local AI coding usage...")
-        self.header_var = tk.StringVar(value="Last refresh: pending | Latest activity: pending | Status: pending | Token delta: pending")
-        self.pricing_var = tk.StringVar(value="Pricing: pending")
+        self.status_var = tk.StringVar(value="Loading local AI coding usage…")
+        self.refresh_meta_var = tk.StringVar(value="Last refresh: pending")
+        self.activity_var = tk.StringVar(value="Latest activity: pending")
+        self.pricing_var = tk.StringVar(value="")
         self.search_var = tk.StringVar(value="")
         self.auto_refresh_var = tk.BooleanVar(value=True)
 
@@ -3843,6 +4878,84 @@ class CodexUsageTrackerGui:
         self.root.after(100, self.poll_events)
         self.root.after(200, self.start_refresh)
         self.root.after(self.refresh_seconds * 1000, self.auto_refresh_tick)
+
+    def _panel(
+        self,
+        parent: Any,
+        *,
+        bg: str | None = None,
+        padx: int = 16,
+        pady: int = 14,
+        border: bool = True,
+    ) -> Any:
+        bg = bg or self.theme["panel"]
+        shell = self.tk.Frame(parent, bg=self.theme["bg"])
+        body_kwargs: dict[str, Any] = {"bg": bg}
+        if border:
+            body_kwargs.update(
+                highlightthickness=1,
+                highlightbackground=self.theme["border_soft"],
+                highlightcolor=self.theme["border_soft"],
+            )
+        body = self.tk.Frame(shell, **body_kwargs)
+        body.pack(fill="both", expand=True)
+        content = self.tk.Frame(body, bg=bg, padx=padx, pady=pady)
+        content.pack(fill="both", expand=True)
+        shell.content = content
+        return shell
+
+    def _card(self, parent: Any, *, accent: str | None = None, padx: int = 16, pady: int = 14) -> Any:
+        shell = self.tk.Frame(parent, bg=self.theme["bg"])
+        body = self.tk.Frame(
+            shell,
+            bg=self.theme["card"],
+            highlightthickness=1,
+            highlightbackground=self.theme["border_soft"],
+        )
+        body.pack(fill="both", expand=True)
+        if accent:
+            stripe = self.tk.Frame(body, bg=accent, width=4)
+            stripe.pack(side="left", fill="y")
+        content = self.tk.Frame(body, bg=self.theme["card"], padx=padx, pady=pady)
+        content.pack(side="left", fill="both", expand=True)
+        shell.content = content
+        return shell
+
+    def _label(
+        self,
+        parent: Any,
+        text: str = "",
+        *,
+        font: tuple[str, int, str] | tuple[str, int] = GUI_FONTS["body"],
+        color: str | None = None,
+        bg: str | None = None,
+        textvariable: Any = None,
+        wrap: int | None = None,
+    ) -> Any:
+        kwargs: dict[str, Any] = {
+            "font": font,
+            "fg": color or self.theme["ink"],
+            "bg": bg or parent.cget("bg"),
+        }
+        if textvariable is not None:
+            kwargs["textvariable"] = textvariable
+        else:
+            kwargs["text"] = text
+        if wrap:
+            kwargs["wraplength"] = wrap
+            kwargs["justify"] = "left"
+        return self.tk.Label(parent, **kwargs)
+
+    def _stat_chip(self, parent: Any, title: str, textvariable: Any) -> None:
+        chip = self.tk.Frame(parent, bg=self.theme["panel_alt"], padx=12, pady=8)
+        chip.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._label(chip, title, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["panel_alt"]).pack(anchor="w")
+        self._label(
+            chip,
+            font=GUI_FONTS["metric"],
+            textvariable=textvariable,
+            bg=self.theme["panel_alt"],
+        ).pack(anchor="w", pady=(2, 0))
 
     def build_ui(self) -> None:
         ttk = self.ttk
@@ -3854,66 +4967,149 @@ class CodexUsageTrackerGui:
         except Exception:
             pass
 
-        container = ttk.Frame(self.root, padding=16)
-        container.pack(fill="both", expand=True)
+        outer = ttk.Frame(self.root, padding=(18, 16, 18, 14))
+        outer.pack(fill="both", expand=True)
 
-        header = ttk.Frame(container)
-        header.pack(fill="x")
-        ttk.Label(
-            header,
-            text="AI Coding Usage Tracker",
-            font=("Segoe UI", 18, "bold"),
-            foreground=self.theme["ink"],
-        ).pack(anchor="w")
-        ttk.Label(header, textvariable=self.header_var, foreground=self.theme["muted"]).pack(anchor="w", pady=(4, 0))
-        ttk.Label(header, textvariable=self.pricing_var, foreground=self.theme["muted"]).pack(anchor="w", pady=(4, 0))
-        ttk.Label(header, textvariable=self.status_var, foreground=self.theme["green"]).pack(anchor="w", pady=(4, 0))
+        header = self._panel(outer, padx=18, pady=16)
+        header.pack(fill="x", pady=(0, 14))
+        header_body = header.content
 
-        controls = ttk.Frame(container)
-        controls.pack(fill="x", pady=(14, 10))
-        ttk.Button(controls, text="Refresh now", command=self.start_refresh).pack(side="left")
-        ttk.Checkbutton(controls, text="Auto-refresh", variable=self.auto_refresh_var).pack(side="left", padx=(12, 18))
-        ttk.Label(controls, text="Search").pack(side="left")
-        ttk.Entry(controls, textvariable=self.search_var, width=36).pack(side="left", padx=(6, 18))
-        ttk.Button(controls, text="Generate HTML report", command=self.start_report).pack(side="left")
-        ttk.Button(controls, text="Open live web dashboard", command=self.open_web_dashboard).pack(side="left", padx=(12, 0))
+        title_row = tk.Frame(header_body, bg=self.theme["panel"])
+        title_row.pack(fill="x")
+        self._label(title_row, "AI Coding Usage Tracker", font=GUI_FONTS["title"], bg=self.theme["panel"]).pack(side="left")
+        self._label(
+            title_row,
+            f"v{VERSION}",
+            font=GUI_FONTS["caption"],
+            color=self.theme["muted"],
+            bg=self.theme["panel"],
+        ).pack(side="left", padx=(10, 0), pady=(8, 0))
 
-        metrics = ttk.Frame(container)
-        metrics.pack(fill="x", pady=(0, 12))
-        metric_names = [
-            "Threads",
-            "Apps",
-            "Total tokens",
-            "Estimated Codex credits",
-            "Estimated USD",
-            "Estimated active time",
+        meta_row = tk.Frame(header_body, bg=self.theme["panel"])
+        meta_row.pack(fill="x", pady=(10, 0))
+        self._label(meta_row, textvariable=self.refresh_meta_var, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["panel"]).pack(side="left")
+        self._label(meta_row, "  ·  ", font=GUI_FONTS["caption"], color=self.theme["border"], bg=self.theme["panel"]).pack(side="left")
+        self._label(meta_row, textvariable=self.activity_var, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["panel"]).pack(side="left")
+
+        self._label(
+            header_body,
+            textvariable=self.pricing_var,
+            font=GUI_FONTS["caption"],
+            color=self.theme["muted"],
+            bg=self.theme["panel"],
+            wrap=900,
+        ).pack(anchor="w", pady=(8, 0))
+
+        self._label(
+            header_body,
+            textvariable=self.status_var,
+            font=GUI_FONTS["body"],
+            color=self.theme["green"],
+            bg=self.theme["panel"],
+        ).pack(anchor="w", pady=(6, 0))
+
+        toolbar = self._panel(outer, bg=self.theme["bg"], padx=0, pady=0, border=False)
+        toolbar.pack(fill="x", pady=(0, 14))
+        controls = tk.Frame(toolbar.content, bg=self.theme["bg"])
+        controls.pack(fill="x")
+
+        ttk.Button(controls, text="Refresh now", style="Primary.TButton", command=self.start_refresh).pack(side="left")
+        ttk.Checkbutton(controls, text="Auto-refresh", variable=self.auto_refresh_var).pack(side="left", padx=(14, 18))
+        self._label(controls, "Search tables", font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["bg"]).pack(side="left")
+        ttk.Entry(controls, textvariable=self.search_var, width=28).pack(side="left", padx=(6, 16))
+        ttk.Button(controls, text="HTML report", command=self.start_report).pack(side="left")
+        ttk.Button(controls, text="Web dashboard", command=self.open_web_dashboard).pack(side="left", padx=(8, 0))
+
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill="both", expand=True)
+
+        overview = ttk.Frame(notebook, padding=(4, 12, 4, 4))
+        notebook.add(overview, text="Overview")
+
+        hero = self._card(overview, accent=self.theme["selected"], padx=20, pady=18)
+        hero.pack(fill="x", pady=(0, 12))
+        hero_content = hero.content
+        self._label(hero_content, "Combined lifetime usage", font=GUI_FONTS["section"], color=self.theme["muted"], bg=self.theme["card"]).pack(anchor="w")
+        self.combined_metric_vars: dict[str, Any] = {}
+        hero_metrics = tk.Frame(hero_content, bg=self.theme["card"])
+        hero_metrics.pack(fill="x", pady=(10, 0))
+        hero_specs = [
+            ("lifetime_tokens", "Total tokens", GUI_FONTS["hero"]),
+            ("lifetime_usd", "Estimated USD", ("Segoe UI Semibold", 18, "bold")),
+            ("today_tokens", "Today tokens", GUI_FONTS["metric"]),
+            ("today_usd", "Today USD", GUI_FONTS["metric"]),
+            ("active_minutes", "Active min", GUI_FONTS["metric"]),
+            ("threads", "Threads", GUI_FONTS["metric"]),
+        ]
+        for index, (key, label, font) in enumerate(hero_specs):
+            cell = tk.Frame(hero_metrics, bg=self.theme["card"], padx=(0, 24))
+            cell.grid(row=0, column=index, sticky="w")
+            self._label(cell, label, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["card"]).pack(anchor="w")
+            value = tk.StringVar(value="—")
+            self.combined_metric_vars[key] = value
+            self._label(cell, textvariable=value, font=font, bg=self.theme["card"]).pack(anchor="w", pady=(4, 0))
+
+        self.provider_cards_frame = tk.Frame(overview, bg=self.theme["bg"])
+        self.provider_cards_frame.pack(fill="x", pady=(0, 12))
+
+        glance = self._panel(overview, bg=self.theme["panel_alt"], padx=12, pady=10)
+        glance.pack(fill="x", pady=(0, 12))
+        glance_row = tk.Frame(glance.content, bg=self.theme["panel_alt"])
+        glance_row.pack(fill="x")
+        self.metric_vars = {}
+        glance_specs = [
+            "All apps today tokens",
+            "Estimated USD (today)",
             "Events",
             "Requests",
             "Top app",
-            "Top project",
             "Top model",
-            "Cache hit rate",
-            "Output share",
-            "Budget alerts",
-            "Billing connectors",
         ]
-        for index, name in enumerate(metric_names):
-            card = ttk.LabelFrame(metrics, text=name, padding=(10, 8))
-            card.grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=4)
-            metrics.columnconfigure(index % 3, weight=1)
-            value = tk.StringVar(value="--")
-            self.metric_vars[name] = value
-            ttk.Label(card, textvariable=value, font=("Segoe UI", 12, "bold"), wraplength=320).pack(anchor="w")
+        for title in glance_specs:
+            var = tk.StringVar(value="—")
+            self.metric_vars[title] = var
+            self._stat_chip(glance_row, title, var)
 
-        notebook = ttk.Notebook(container)
-        notebook.pack(fill="both", expand=True)
+        hidden_metrics = [
+            "All apps lifetime tokens",
+            "Codex lifetime tokens",
+            "Claude lifetime tokens",
+            "Cursor lifetime tokens",
+            "Threads",
+            "Estimated USD (lifetime)",
+            "Estimated Codex credits",
+            "Estimated active time",
+            "Top project",
+        ]
+        for title in hidden_metrics:
+            self.metric_vars[title] = tk.StringVar(value="—")
 
-        overview = ttk.Frame(notebook, padding=10)
-        notebook.add(overview, text="Overview")
-        self.add_chart(overview, "sources", "Apps", GUI_CHART_COLORS["sources"])
-        self.add_chart(overview, "daily", "Daily Tokens", GUI_CHART_COLORS["daily"])
-        self.add_chart(overview, "projects", "Top Projects", GUI_CHART_COLORS["projects"])
-        self.add_chart(overview, "models", "Top Models", GUI_CHART_COLORS["models"])
+        charts = tk.Frame(overview, bg=self.theme["bg"])
+        charts.pack(fill="both", expand=True)
+        charts.columnconfigure(0, weight=1)
+        charts.columnconfigure(1, weight=1)
+        self.add_chart(charts, "sources", "App usage (lifetime)", GUI_CHART_COLORS["sources"], row=0, column=0)
+        self.add_chart(charts, "daily", "Daily tokens", GUI_CHART_COLORS["daily"], row=0, column=1)
+
+        providers = ttk.Frame(notebook, padding=(4, 12, 4, 4))
+        notebook.add(providers, text="Lifetime Totals")
+        self._label(
+            providers,
+            "Lifetime and today usage for Codex, Claude Code, Cursor, plus combined totals.",
+            font=GUI_FONTS["caption"],
+            color=self.theme["muted"],
+            wrap=760,
+        ).pack(anchor="w", pady=(0, 10))
+        self.provider_detail_frame = tk.Frame(providers, bg=self.theme["bg"])
+        self.provider_detail_frame.pack(fill="x", pady=(0, 12))
+        self.table_widgets["providers"] = self.make_table(providers)
+
+        detail_charts = tk.Frame(providers, bg=self.theme["bg"])
+        detail_charts.pack(fill="both", expand=True, pady=(8, 0))
+        detail_charts.columnconfigure(0, weight=1)
+        detail_charts.columnconfigure(1, weight=1)
+        self.add_chart(detail_charts, "projects", "Top projects", GUI_CHART_COLORS["projects"], row=0, column=0)
+        self.add_chart(detail_charts, "models", "Top models", GUI_CHART_COLORS["models"], row=0, column=1)
 
         table_specs = {
             "sources": "Apps",
@@ -3925,19 +5121,30 @@ class CodexUsageTrackerGui:
             "billing": "Billing",
         }
         for key, title in table_specs.items():
-            frame = ttk.Frame(notebook, padding=8)
+            frame = ttk.Frame(notebook, padding=(4, 12, 4, 4))
             notebook.add(frame, text=title)
             self.table_widgets[key] = self.make_table(frame)
 
-    def add_chart(self, parent: Any, key: str, title: str, color: str) -> None:
-        frame = self.ttk.LabelFrame(parent, text=title, padding=8)
-        frame.pack(fill="both", expand=True, pady=(0, 8))
+    def add_chart(
+        self,
+        parent: Any,
+        key: str,
+        title: str,
+        color: str,
+        *,
+        row: int = 0,
+        column: int = 0,
+    ) -> None:
+        shell = self._panel(parent, padx=12, pady=12)
+        shell.grid(row=row, column=column, sticky="nsew", padx=(0 if column == 0 else 6, 6 if column == 0 else 0), pady=0)
+        parent.rowconfigure(row, weight=1)
+        self._label(shell.content, title, font=GUI_FONTS["section"], color=self.theme["muted"], bg=self.theme["panel"]).pack(anchor="w", pady=(0, 8))
         canvas = self.tk.Canvas(
-            frame,
-            height=155,
+            shell.content,
+            height=168,
             bg=self.theme["panel"],
-            highlightthickness=1,
-            highlightbackground=self.theme["border"],
+            highlightthickness=0,
+            bd=0,
         )
         canvas.pack(fill="both", expand=True)
         canvas.chart_color = color
@@ -3964,15 +5171,21 @@ class CodexUsageTrackerGui:
         for column_id, label in columns:
             tree.heading(column_id, text=label)
             width = 300 if column_id in {"detail", "blocked"} else 230 if column_id in {"title", "folder"} else 120
-            anchor = "w" if column_id in {"app", "title", "project", "folder", "model", "last_activity", "detail", "blocked", "provider", "status", "env_var"} else "e"
+            anchor = "w" if column_id in {"app", "title", "project", "folder", "model", "last_activity", "detail", "blocked", "provider", "status", "env_var", "basis"} else "e"
             tree.column(column_id, width=width, minwidth=80, anchor=anchor, stretch=True)
+        tree.tag_configure("even", background=self.theme["panel"])
+        tree.tag_configure("odd", background=self.theme["panel_alt"])
 
     def start_refresh(self) -> None:
         if self.worker_running:
-            self.status_var.set("Refresh already running...")
+            self.status_var.set("Refresh already running…")
             return
         self.worker_running = True
-        self.status_var.set("Refreshing from selected local AI coding data...")
+        sources = parse_source_filter(getattr(self.args, "sources", None))
+        if "cursor" in sources:
+            self.status_var.set("Scanning Cursor logs — first refresh can take up to a minute.")
+        else:
+            self.status_var.set("Refreshing dashboard…")
         thread = threading.Thread(target=self.refresh_worker, daemon=True)
         thread.start()
 
@@ -4058,82 +5271,236 @@ class CodexUsageTrackerGui:
 
     def update_view(self, model: dict[str, Any]) -> None:
         self.previous_total_tokens = int(model["total_tokens"])
-        self.header_var.set(
-            "Last refresh: "
-            + model["generated_at"]
-            + " | Latest activity: "
-            + model["latest_activity"]
-            + " | Status: "
-            + model["activity_status"]
-            + " | Token delta: "
-            + (model["token_delta"] or "initial")
+        status = model["activity_status"]
+        self.refresh_meta_var.set(
+            f"Last refresh {model['generated_at']}  ·  Token delta {model['token_delta'] or 'initial'}"
         )
-        pricing = model.get("pricing") or pricing_metadata()
+        self.activity_var.set(f"Latest activity {model['latest_activity']}  ·  Status {status}")
         self.pricing_var.set(
-            "Pricing: Codex token-rate card verified "
-            + str(pricing.get("source_date") or PRICING_SOURCE_DATE)
-            + "; non-Codex billing remains vendor-authoritative."
+            "Estimates from local logs. Cursor includes context-cache replay like Claude cache reads."
         )
         for label, value in model["metrics"]:
             if label in self.metric_vars:
                 self.metric_vars[label].set(value)
 
+        self.update_provider_cards(
+            model.get("provider_summaries") or [],
+            model.get("combined_totals") or {},
+        )
+        combined = model.get("combined_totals") or {}
+        if combined and self.combined_metric_vars:
+            self.combined_metric_vars["lifetime_tokens"].set(number(combined.get("lifetime_tokens", 0)))
+            self.combined_metric_vars["lifetime_usd"].set(f"${number(combined.get('lifetime_usd', 0.0))}")
+            self.combined_metric_vars["today_tokens"].set(number(combined.get("today_tokens", 0)))
+            self.combined_metric_vars["today_usd"].set(f"${number(combined.get('today_usd', 0.0))}")
+            self.combined_metric_vars["active_minutes"].set(str(combined.get("active_minutes", 0)))
+            self.combined_metric_vars["threads"].set(number(combined.get("threads", 0)))
+
         for key, table in model["tables"].items():
             self.configure_table(key, table["columns"])
             self.table_data[key] = list(table["rows"])
 
-        self.draw_chart(self.chart_canvases["sources"], model["charts"]["sources"])
-        self.draw_chart(self.chart_canvases["daily"], model["charts"]["daily"])
-        self.draw_chart(self.chart_canvases["projects"], model["charts"]["projects"])
-        self.draw_chart(self.chart_canvases["models"], model["charts"]["models"])
+        self.draw_chart(self.chart_canvases["sources"], model["charts"]["sources"], chart_key="sources")
+        self.draw_chart(self.chart_canvases["daily"], model["charts"]["daily"], chart_key="daily")
+        self.draw_chart(self.chart_canvases["projects"], model["charts"]["projects"], chart_key="projects")
+        self.draw_chart(self.chart_canvases["models"], model["charts"]["models"], chart_key="models")
         self.apply_filter()
-        self.status_var.set("Live dashboard refreshed from selected local AI coding data.")
+        self.status_var.set("Dashboard updated.")
 
-    def draw_chart(self, canvas: Any, rows: list[dict[str, Any]]) -> None:
+    def update_provider_cards(
+        self,
+        providers: list[dict[str, Any]],
+        combined_totals: dict[str, Any],
+    ) -> None:
+        for child in self.provider_cards_frame.winfo_children():
+            child.destroy()
+        for child in self.provider_detail_frame.winfo_children():
+            child.destroy()
+        self.provider_card_vars.clear()
+
+        if not providers:
+            self._label(
+                self.provider_cards_frame,
+                "No provider data in this range.",
+                color=self.theme["muted"],
+                bg=self.theme["bg"],
+            ).pack(anchor="w")
+            return
+
+        self.provider_cards_frame.columnconfigure(0, weight=1)
+        self.provider_cards_frame.columnconfigure(1, weight=1)
+        self.provider_cards_frame.columnconfigure(2, weight=1)
+
+        for index, row in enumerate(providers):
+            app_key = str(row.get("app_key") or "")
+            accent = GUI_APP_ACCENTS.get(app_key, self.theme["blue"])
+            card = self._card(self.provider_cards_frame, accent=accent, padx=16, pady=14)
+            card.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 6, 6 if index == 0 else 0))
+            content = card.content
+
+            self._label(content, str(row.get("app") or "Provider"), font=GUI_FONTS["section"], bg=self.theme["card"]).pack(anchor="w")
+
+            lifetime_tokens = self.tk.StringVar(value=number(row.get("lifetime_tokens", 0)))
+            token_breakdown = self.tk.StringVar(
+                value=(
+                    f"In {number(row.get('lifetime_input_tokens', 0))}  ·  "
+                    f"Cached {number(row.get('lifetime_cached_tokens', 0))}  ·  "
+                    f"Out {number(row.get('lifetime_output_tokens', 0))}"
+                )
+            )
+            today_tokens = self.tk.StringVar(value=f"{number(row.get('today_tokens', 0))} today")
+            lifetime_usd = self.tk.StringVar(value=f"${number(row.get('lifetime_usd', 0.0))} lifetime")
+            today_usd = self.tk.StringVar(value=f"${number(row.get('today_usd', 0.0))} today")
+            meta = self.tk.StringVar(
+                value=(
+                    f"{number(row.get('threads', 0))} threads  ·  "
+                    f"{number(row.get('requests', 0))} requests  ·  "
+                    f"{row.get('active_minutes', 0)} min"
+                )
+            )
+            self.provider_card_vars[str(row.get("app") or index)] = {
+                "lifetime_tokens": lifetime_tokens,
+                "today_tokens": today_tokens,
+            }
+
+            self._label(content, textvariable=lifetime_tokens, font=GUI_FONTS["hero"], bg=self.theme["card"]).pack(anchor="w", pady=(8, 0))
+            if app_key == "cursor":
+                self._label(
+                    content,
+                    "includes cache estimate",
+                    font=GUI_FONTS["caption"],
+                    color=self.theme["muted"],
+                    bg=self.theme["card"],
+                ).pack(anchor="w")
+            self._label(content, textvariable=token_breakdown, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["card"]).pack(anchor="w", pady=(6, 0))
+            self._label(content, textvariable=today_tokens, font=GUI_FONTS["body"], color=accent, bg=self.theme["card"]).pack(anchor="w", pady=(4, 0))
+            self._label(content, textvariable=lifetime_usd, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["card"]).pack(anchor="w", pady=(8, 0))
+            self._label(content, textvariable=today_usd, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["card"]).pack(anchor="w")
+            self._label(content, textvariable=meta, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["card"]).pack(anchor="w", pady=(8, 0))
+
+            detail = self._card(self.provider_detail_frame, accent=accent, padx=14, pady=12)
+            detail.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 6, 6 if index == 0 else 0))
+            self.provider_detail_frame.columnconfigure(index, weight=1)
+            detail_content = detail.content
+            self._label(detail_content, f"{row.get('app')} breakdown", font=GUI_FONTS["section"], bg=self.theme["card"]).pack(anchor="w")
+            detail_lines = [
+                f"Lifetime: {number(row.get('lifetime_tokens', 0))} tokens",
+                f"Input {number(row.get('lifetime_input_tokens', 0))}  ·  Cached {number(row.get('lifetime_cached_tokens', 0))}  ·  Output {number(row.get('lifetime_output_tokens', 0))}",
+                f"Today: {number(row.get('today_tokens', 0))} tokens  ·  ${number(row.get('today_usd', 0.0))} USD",
+                f"Lifetime USD est.: ${number(row.get('lifetime_usd', 0.0))}",
+                f"{row.get('active_minutes', 0)} active min  ·  {number(row.get('threads', 0))} threads  ·  {number(row.get('requests', 0))} requests",
+            ]
+            for line in detail_lines:
+                self._label(
+                    detail_content,
+                    line,
+                    font=GUI_FONTS["caption"],
+                    color=self.theme["muted"],
+                    bg=self.theme["card"],
+                    wrap=280,
+                ).pack(anchor="w", pady=(4, 0))
+
+    def _chart_bar_color(self, chart_key: str, label: str, fallback: str) -> str:
+        if chart_key != "sources":
+            return fallback
+        normalized = label.strip().lower()
+        if "codex" in normalized:
+            return GUI_APP_ACCENTS["codex"]
+        if "claude" in normalized:
+            return GUI_APP_ACCENTS["claude"]
+        if "cursor" in normalized:
+            return GUI_APP_ACCENTS["cursor"]
+        return fallback
+
+    def _truncate_text(self, text: str, max_chars: int) -> str:
+        text = str(text or "")
+        if len(text) <= max_chars:
+            return text
+        return text[: max(0, max_chars - 1)] + "…"
+
+    def draw_chart(
+        self,
+        canvas: Any,
+        rows: list[dict[str, Any]],
+        *,
+        chart_key: str = "",
+    ) -> None:
         canvas.delete("all")
-        width = max(int(canvas.winfo_width() or 0), 520)
-        height = max(int(canvas.winfo_height() or 0), 140)
+        width = max(int(canvas.winfo_width() or 0), 360)
+        height = max(int(canvas.winfo_height() or 0), 168)
         if not rows:
-            canvas.create_text(width / 2, height / 2, text="No data in this range.", fill=self.theme["muted"])
+            canvas.create_text(
+                width / 2,
+                height / 2,
+                text="No data in this range.",
+                fill=self.theme["muted"],
+                font=GUI_FONTS["body"],
+            )
             return
 
         max_value = max([int(row["value"]) for row in rows] or [1])
-        row_height = max(22, min(34, int((height - 18) / max(len(rows), 1))))
-        label_width = 155
-        value_width = 110
-        bar_width = max(80, width - label_width - value_width - 34)
-        color = getattr(canvas, "chart_color", "#1f6feb")
+        row_height = max(28, min(36, int((height - 24) / max(len(rows), 1))))
+        label_width = 118
+        value_width = min(150, max(110, width // 5))
+        bar_width = max(60, width - label_width - value_width - 28)
+        fallback_color = getattr(canvas, "chart_color", self.theme["blue"])
 
         for index, row in enumerate(rows):
-            y = 12 + index * row_height
-            label = str(row["label"])
-            if len(label) > 24:
-                label = label[:21] + "..."
+            y = 14 + index * row_height
+            label = self._truncate_text(str(row["label"]), 16)
             value = int(row["value"])
-            filled = max(2, int((value / max_value) * bar_width))
-            canvas.create_text(12, y + 8, text=label, anchor="w", fill=self.theme["muted"])
+            filled = max(3, int((value / max_value) * bar_width)) if max_value else 0
+            color = self._chart_bar_color(chart_key, str(row.get("label") or ""), fallback_color)
+            canvas.create_text(
+                10,
+                y + row_height / 2,
+                text=label,
+                anchor="w",
+                fill=self.theme["muted"],
+                font=GUI_FONTS["caption"],
+            )
+            track_y = y + 8
             canvas.create_rectangle(
                 label_width,
-                y + 2,
+                track_y,
                 label_width + bar_width,
-                y + 14,
+                track_y + 10,
                 fill=self.theme["subtle"],
                 outline="",
             )
-            canvas.create_rectangle(label_width, y + 2, label_width + filled, y + 14, fill=color, outline="")
-            detail = str(row.get("detail") or "")
-            value_text = number(value) + (f" | {detail}" if detail else "")
-            canvas.create_text(label_width + bar_width + 12, y + 8, text=value_text, anchor="w", fill=self.theme["ink"])
+            canvas.create_rectangle(
+                label_width,
+                track_y,
+                label_width + filled,
+                track_y + 10,
+                fill=color,
+                outline="",
+            )
+            detail = self._truncate_text(str(row.get("detail") or ""), 18)
+            value_text = self._truncate_text(number(value), 14)
+            if detail:
+                value_text = f"{value_text}  ·  {detail}"
+            canvas.create_text(
+                label_width + bar_width + 10,
+                y + row_height / 2,
+                text=value_text,
+                anchor="w",
+                fill=self.theme["ink"],
+                font=GUI_FONTS["caption"],
+            )
 
     def apply_filter(self) -> None:
         query = self.search_var.get().strip().lower()
         for key, tree in self.table_widgets.items():
             for item in tree.get_children():
                 tree.delete(item)
+            visible_index = 0
             for row in self.table_data.get(key, []):
                 haystack = " ".join(str(value) for value in row).lower()
                 if not query or query in haystack:
-                    tree.insert("", "end", values=row)
+                    tag = "even" if visible_index % 2 == 0 else "odd"
+                    tree.insert("", "end", values=row, tags=(tag,))
+                    visible_index += 1
 
     def close(self) -> None:
         self.closed = True
@@ -4173,7 +5540,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex-home", default=str(DEFAULT_CODEX_HOME), help="Codex data folder. Default: ~/.codex")
     parser.add_argument("--claude-home", default=str(DEFAULT_CLAUDE_HOME), help="Claude Code data folder. Default: ~/.claude")
     parser.add_argument("--cursor-db", default=str(DEFAULT_CURSOR_AI_DB), help="Cursor AI tracking SQLite DB. Default: ~/.cursor/ai-tracking/ai-code-tracking.db")
-    parser.add_argument("--cursor-state-db", default=str(DEFAULT_CURSOR_STATE_DB), help="Cursor global state SQLite DB used for legacy daily AI-code stats.")
+    parser.add_argument("--cursor-state-db", default=str(DEFAULT_CURSOR_STATE_DB), help="Cursor global state SQLite DB for conversation bubbles and legacy daily AI-code stats.")
+    parser.add_argument("--cursor-projects-home", default=str(DEFAULT_CURSOR_PROJECTS_HOME), help="Cursor projects folder with Agent transcripts. Default: ~/.cursor/projects")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Report output directory.")
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE), help="State file used to dedupe WakaTime heartbeats.")
     parser.add_argument("--days", type=int, default=None, help="Only include threads active in the last N days.")
