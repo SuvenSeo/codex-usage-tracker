@@ -1,8 +1,10 @@
-"""Canvas-drawn brand badges and chart accents for the native GUI."""
+"""Brand logos, canvas accents, and chart helpers for the native GUI."""
 
 from __future__ import annotations
 
 import math
+import sys
+from pathlib import Path
 from typing import Any
 
 GUI_APP_BRAND: dict[str, dict[str, str]] = {
@@ -11,24 +13,28 @@ GUI_APP_BRAND: dict[str, dict[str, str]] = {
         "accent": "#9d7cff",
         "glow": "#6d4aff",
         "surface": "#1a1528",
+        "asset": "codex.png",
     },
     "claude": {
         "label": "Claude",
         "accent": "#f59e6c",
         "glow": "#e07a45",
         "surface": "#241812",
+        "asset": "claude.png",
     },
     "cursor": {
         "label": "Cursor",
         "accent": "#36cfe8",
         "glow": "#0ea5c7",
         "surface": "#0f1a20",
+        "asset": "cursor.png",
     },
     "all": {
         "label": "All apps",
         "accent": "#64748b",
         "glow": "#475569",
         "surface": "#151820",
+        "asset": "",
     },
 }
 
@@ -48,6 +54,86 @@ def app_key_from_label(label: str) -> str:
 
 def brand_for_app(app_key: str) -> dict[str, str]:
     return GUI_APP_BRAND.get(app_key, GUI_APP_BRAND["all"])
+
+
+def brand_assets_dir() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "assets" / "gui" / "brands"
+    return Path(__file__).resolve().parent / "assets" / "gui" / "brands"
+
+
+def brand_asset_path(app_key: str) -> Path | None:
+    asset_name = brand_for_app(app_key).get("asset") or ""
+    if not asset_name:
+        return None
+    return brand_assets_dir() / asset_name
+
+
+class BrandIconManager:
+    """Load bundled PNG logos and return Tk PhotoImages scaled to a target size."""
+
+    def __init__(self, tk_module: Any) -> None:
+        self.tk = tk_module
+        self._sources: dict[str, Any | None] = {}
+        self._scaled: dict[tuple[str, int], Any | None] = {}
+        self._photo_refs: list[Any] = []
+
+    def _load_source(self, app_key: str) -> Any | None:
+        if app_key in self._sources:
+            return self._sources[app_key]
+
+        path = brand_asset_path(app_key)
+        if path is None or not path.exists():
+            self._sources[app_key] = None
+            return None
+
+        try:
+            photo = self.tk.PhotoImage(file=str(path))
+        except Exception:
+            self._sources[app_key] = None
+            return None
+
+        self._photo_refs.append(photo)
+        self._sources[app_key] = photo
+        return photo
+
+    def photo(self, app_key: str, size: int) -> Any | None:
+        if app_key == "all":
+            return None
+
+        cache_key = (app_key, size)
+        if cache_key in self._scaled:
+            return self._scaled[cache_key]
+
+        source = self._load_source(app_key)
+        if source is None:
+            self._scaled[cache_key] = None
+            return None
+
+        source_width = int(source.width())
+        if source_width <= 0:
+            self._scaled[cache_key] = None
+            return None
+
+        factor = max(1, round(source_width / max(size, 1)))
+        if factor <= 1:
+            self._scaled[cache_key] = source
+            return source
+
+        scaled = source.subsample(factor, factor)
+        self._photo_refs.append(scaled)
+        self._scaled[cache_key] = scaled
+        return scaled
+
+    def get(self, app_key: str, size: int) -> Any | None:
+        return self.photo(app_key, size)
+
+    def has_assets(self) -> bool:
+        assets_dir = brand_assets_dir()
+        return assets_dir.exists() and any(assets_dir.glob("*.png"))
+
+
+BrandLogoCache = BrandIconManager
 
 
 def draw_accent_header_strip(
@@ -76,6 +162,7 @@ def draw_app_badge(
     app_key: str,
     size: int = 44,
     bg: str = "#151820",
+    logo: Any | None = None,
 ) -> None:
     canvas.delete("all")
     canvas.configure(
@@ -85,6 +172,11 @@ def draw_app_badge(
         highlightthickness=0,
         bd=0,
     )
+
+    if logo is not None:
+        canvas.create_image(size / 2, size / 2, image=logo)
+        return
+
     brand = brand_for_app(app_key)
     pad = max(2, size // 14)
     outer = size - pad

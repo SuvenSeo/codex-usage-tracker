@@ -19,6 +19,16 @@ try {
         python -m pip install "pyinstaller>=6.0"
     }
 
+    $BrandAssets = Join-Path $Root "assets\gui\brands"
+    if (-not (Test-Path -LiteralPath $BrandAssets)) {
+        throw "Missing brand assets folder: $BrandAssets. Run scripts/generate_brand_assets.py first."
+    }
+    foreach ($required in @("codex.png", "claude.png", "cursor.png")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $BrandAssets $required))) {
+            throw "Missing brand asset: $required. Run scripts/generate_brand_assets.py first."
+        }
+    }
+
     python -m PyInstaller `
         --noconfirm `
         --clean `
@@ -28,6 +38,7 @@ try {
         --distpath $DistDir `
         --workpath $WorkDir `
         --specpath $SpecDir `
+        --add-data "$BrandAssets;assets/gui/brands" `
         --hidden-import gui_visuals `
         --hidden-import tkinter `
         --hidden-import tkinter.ttk `

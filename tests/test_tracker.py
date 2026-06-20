@@ -226,6 +226,29 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertEqual(gui_visuals.app_key_from_label("Claude Code"), "claude")
         self.assertEqual(gui_visuals.app_key_from_label("Cursor"), "cursor")
         self.assertIn("accent", gui_visuals.brand_for_app("codex"))
+        assets_dir = gui_visuals.brand_assets_dir()
+        for app_key in ("codex", "claude", "cursor"):
+            path = gui_visuals.brand_asset_path(app_key)
+            self.assertIsNotNone(path)
+            assert path is not None
+            self.assertTrue(path.exists(), f"missing bundled brand asset: {path}")
+            self.assertTrue(str(path).startswith(str(assets_dir)))
+
+    def test_brand_icon_manager_loads_png(self):
+        import tkinter as tk
+
+        import gui_visuals
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            manager = gui_visuals.BrandIconManager(tk)
+            photo = manager.photo("cursor", 32)
+            self.assertIsNotNone(photo)
+            assert photo is not None
+            self.assertGreater(int(photo.width()), 0)
+        finally:
+            root.destroy()
 
     def test_dashboard_html_uses_dark_theme_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:

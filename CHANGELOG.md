@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## v0.2.5 - 2026-06-20
+
+- Replaced stylized GUI badges with bundled real brand logos for Codex
+  (OpenAI), Claude Code (Anthropic), and Cursor in the header, provider
+  cards, detail panels, and source charts.
+- Added `assets/gui/brands/` PNG assets and `scripts/generate_brand_assets.py`
+  to regenerate them from official favicons and the local Cursor install.
+- PyInstaller builds now bundle brand assets for the windowed desktop app.
+
 ## v0.2.4 - 2026-06-20
 
 - Added canvas-drawn app badges for Codex, Claude Code, and Cursor across the

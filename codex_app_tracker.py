@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from gui_visuals import (
+    BrandIconManager,
     app_key_from_label,
     brand_for_app,
     draw_accent_header_strip,
@@ -51,7 +52,7 @@ except Exception:  # pragma: no cover - Python without zoneinfo support.
     ZoneInfo = None  # type: ignore[assignment]
 
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 TRACKER_DIR = Path(__file__).resolve().parent
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_CLAUDE_HOME = Path.home() / ".claude"
@@ -4892,6 +4893,7 @@ class CodexUsageTrackerGui:
         self.activity_dot: Any = None
 
         self.root = tk.Tk()
+        self.brand_icons = BrandIconManager(tk)
         self.root.title(f"AI Coding Usage Tracker v{VERSION}")
         self.root.geometry("1320x860")
         self.root.minsize(1080, 720)
@@ -5001,8 +5003,15 @@ class CodexUsageTrackerGui:
 
     def _make_app_badge(self, parent: Any, app_key: str, *, size: int = 44, bg: str | None = None) -> Any:
         bg = self._widget_bg(parent, bg)
+        logo = self.brand_icons.photo(app_key, size)
+        if logo is not None:
+            shell = self.tk.Frame(parent, bg=bg)
+            label = self.tk.Label(shell, image=logo, bg=bg, bd=0)
+            label.image = logo
+            label.pack()
+            return shell
         canvas = self.tk.Canvas(parent, width=size, height=size, bg=bg, highlightthickness=0, bd=0)
-        draw_app_badge(canvas, app_key=app_key, size=size, bg=bg)
+        draw_app_badge(canvas, app_key=app_key, size=size, bg=bg, logo=None)
         return canvas
 
     def _redraw_header_strip(self, _event: Any = None) -> None:
@@ -5648,19 +5657,24 @@ class CodexUsageTrackerGui:
             label_x = 10
             if chart_key == "sources":
                 app_key = app_key_from_label(str(row.get("label") or ""))
-                brand = brand_for_app(app_key)
                 icon_size = 18
                 icon_y = y + row_height / 2 - icon_size / 2
-                canvas.create_oval(
-                    label_x,
-                    icon_y,
-                    label_x + icon_size,
-                    icon_y + icon_size,
-                    fill=brand["surface"],
-                    outline=brand["accent"],
-                    width=1,
-                )
-                label_x += icon_size + 8
+                photo = self.brand_icons.photo(app_key, icon_size)
+                if photo is not None:
+                    canvas.create_image(label_x + icon_size / 2, y + row_height / 2, image=photo)
+                    label_x += icon_size + 8
+                else:
+                    brand = brand_for_app(app_key)
+                    canvas.create_oval(
+                        label_x,
+                        icon_y,
+                        label_x + icon_size,
+                        icon_y + icon_size,
+                        fill=brand["surface"],
+                        outline=brand["accent"],
+                        width=1,
+                    )
+                    label_x += icon_size + 8
             canvas.create_text(
                 label_x,
                 y + row_height / 2,

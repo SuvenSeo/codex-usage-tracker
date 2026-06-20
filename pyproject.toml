@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-usage-tracker"
-version = "0.2.4"
+version = "0.2.5"
 description = "Local AI coding usage dashboard for Codex, Claude Code, Cursor, and WakaTime."
 readme = "README.md"
 requires-python = ">=3.10"
