@@ -28,6 +28,7 @@ try {
         --distpath $DistDir `
         --workpath $WorkDir `
         --specpath $SpecDir `
+        --hidden-import gui_visuals `
         --hidden-import tkinter `
         --hidden-import tkinter.ttk `
         --hidden-import tkinter.messagebox `

@@ -36,13 +36,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from gui_visuals import (
+    app_key_from_label,
+    brand_for_app,
+    draw_accent_header_strip,
+    draw_app_badge,
+    draw_share_donut,
+    draw_token_mix_bar,
+)
+
 try:
     from zoneinfo import ZoneInfo
 except Exception:  # pragma: no cover - Python without zoneinfo support.
     ZoneInfo = None  # type: ignore[assignment]
 
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 TRACKER_DIR = Path(__file__).resolve().parent
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_CLAUDE_HOME = Path.home() / ".claude"
@@ -4878,6 +4887,9 @@ class CodexUsageTrackerGui:
         self.provider_card_vars: dict[str, dict[str, Any]] = {}
         self.web_server: DashboardTCPServer | None = None
         self.web_url: str | None = None
+        self.header_strip: Any = None
+        self.share_donut: Any = None
+        self.activity_dot: Any = None
 
         self.root = tk.Tk()
         self.root.title(f"AI Coding Usage Tracker v{VERSION}")
@@ -4987,6 +4999,25 @@ class CodexUsageTrackerGui:
             bg=self.theme["panel_alt"],
         ).pack(anchor="w", pady=(2, 0))
 
+    def _make_app_badge(self, parent: Any, app_key: str, *, size: int = 44, bg: str | None = None) -> Any:
+        bg = self._widget_bg(parent, bg)
+        canvas = self.tk.Canvas(parent, width=size, height=size, bg=bg, highlightthickness=0, bd=0)
+        draw_app_badge(canvas, app_key=app_key, size=size, bg=bg)
+        return canvas
+
+    def _redraw_header_strip(self, _event: Any = None) -> None:
+        if self.header_strip is None:
+            return
+        width = max(int(self.header_strip.winfo_width() or 0), 1)
+        draw_accent_header_strip(self.header_strip, width=width, bg=self.theme["panel"])
+
+    def _provider_usage(self, row: dict[str, Any]) -> dict[str, int]:
+        return {
+            "input_tokens": int(row.get("lifetime_input_tokens") or 0),
+            "cached_input_tokens": int(row.get("lifetime_cached_tokens") or 0),
+            "output_tokens": int(row.get("lifetime_output_tokens") or 0),
+        }
+
     def build_ui(self) -> None:
         ttk = self.ttk
         tk = self.tk
@@ -5004,21 +5035,54 @@ class CodexUsageTrackerGui:
         header.pack(fill="x", pady=(0, 14))
         header_body = header.content
 
+        self.header_strip = tk.Canvas(header_body, height=5, bg=self.theme["panel"], highlightthickness=0, bd=0)
+        self.header_strip.pack(fill="x", pady=(0, 12))
+        self.header_strip.bind("<Configure>", self._redraw_header_strip)
+
         title_row = tk.Frame(header_body, bg=self.theme["panel"])
         title_row.pack(fill="x")
-        self._label(title_row, "AI Coding Usage Tracker", font=GUI_FONTS["title"], bg=self.theme["panel"]).pack(side="left")
+        title_left = tk.Frame(title_row, bg=self.theme["panel"])
+        title_left.pack(side="left", fill="x", expand=True)
+        self._label(title_left, "AI Coding Usage Tracker", font=GUI_FONTS["title"], bg=self.theme["panel"]).pack(anchor="w")
         self._label(
-            title_row,
+            title_left,
+            "Local usage across Codex, Claude Code, and Cursor",
+            font=GUI_FONTS["caption"],
+            color=self.theme["muted"],
+            bg=self.theme["panel"],
+        ).pack(anchor="w", pady=(4, 0))
+
+        legend_row = tk.Frame(title_row, bg=self.theme["panel"])
+        legend_row.pack(side="right")
+        for app_key in ("codex", "claude", "cursor"):
+            brand = brand_for_app(app_key)
+            legend_item = tk.Frame(legend_row, bg=self.theme["panel"])
+            legend_item.pack(side="left", padx=(10, 0))
+            self._make_app_badge(legend_item, app_key, size=30, bg=self.theme["panel"]).pack(side="left")
+            self._label(
+                legend_item,
+                brand["label"],
+                font=GUI_FONTS["caption"],
+                color=brand["accent"],
+                bg=self.theme["panel"],
+            ).pack(side="left", padx=(6, 0))
+
+        version_row = tk.Frame(header_body, bg=self.theme["panel"])
+        version_row.pack(fill="x", pady=(10, 0))
+        self._label(
+            version_row,
             f"v{VERSION}",
             font=GUI_FONTS["caption"],
             color=self.theme["muted"],
             bg=self.theme["panel"],
-        ).pack(side="left", padx=(10, 0), pady=(8, 0))
+        ).pack(side="left")
 
         meta_row = tk.Frame(header_body, bg=self.theme["panel"])
-        meta_row.pack(fill="x", pady=(10, 0))
+        meta_row.pack(fill="x", pady=(8, 0))
         self._label(meta_row, textvariable=self.refresh_meta_var, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["panel"]).pack(side="left")
         self._label(meta_row, "  ·  ", font=GUI_FONTS["caption"], color=self.theme["border"], bg=self.theme["panel"]).pack(side="left")
+        self.activity_dot = tk.Canvas(meta_row, width=10, height=10, bg=self.theme["panel"], highlightthickness=0, bd=0)
+        self.activity_dot.pack(side="left", padx=(0, 6))
         self._label(meta_row, textvariable=self.activity_var, font=GUI_FONTS["caption"], color=self.theme["muted"], bg=self.theme["panel"]).pack(side="left")
 
         self._label(
@@ -5059,7 +5123,20 @@ class CodexUsageTrackerGui:
         hero = self._card(overview, accent=self.theme["selected"], padx=20, pady=18)
         hero.pack(fill="x", pady=(0, 12))
         hero_content = hero.content
-        self._label(hero_content, "Combined lifetime usage", font=GUI_FONTS["section"], color=self.theme["muted"], bg=self.theme["card"]).pack(anchor="w")
+        hero_top = tk.Frame(hero_content, bg=self.theme["card"])
+        hero_top.pack(fill="x")
+        hero_title = tk.Frame(hero_top, bg=self.theme["card"])
+        hero_title.pack(side="left", fill="x", expand=True)
+        self._label(hero_title, "Combined lifetime usage", font=GUI_FONTS["section"], color=self.theme["muted"], bg=self.theme["card"]).pack(anchor="w")
+        self._label(
+            hero_title,
+            "Share of lifetime tokens across connected apps",
+            font=GUI_FONTS["caption"],
+            color=self.theme["muted"],
+            bg=self.theme["card"],
+        ).pack(anchor="w", pady=(4, 0))
+        self.share_donut = tk.Canvas(hero_top, width=92, height=92, bg=self.theme["card"], highlightthickness=0, bd=0)
+        self.share_donut.pack(side="right")
         self.combined_metric_vars: dict[str, Any] = {}
         hero_metrics = tk.Frame(hero_content, bg=self.theme["card"])
         hero_metrics.pack(fill="x", pady=(10, 0))
@@ -5317,6 +5394,8 @@ class CodexUsageTrackerGui:
             model.get("provider_summaries") or [],
             model.get("combined_totals") or {},
         )
+        self._update_share_donut(model.get("provider_summaries") or [])
+        self._update_activity_dot(str(model.get("activity_status") or "") == "Active")
         combined = model.get("combined_totals") or {}
         if combined and self.combined_metric_vars:
             self.combined_metric_vars["lifetime_tokens"].set(number(combined.get("lifetime_tokens", 0)))
@@ -5344,6 +5423,32 @@ class CodexUsageTrackerGui:
             ]
             status = f"{status} Large tables capped for responsiveness ({'; '.join(parts)}). Use HTML report for full data."
         self.status_var.set(status)
+
+    def _update_share_donut(self, providers: list[dict[str, Any]]) -> None:
+        if self.share_donut is None:
+            return
+        slices = [
+            (
+                str(row.get("app") or ""),
+                int(row.get("lifetime_tokens") or 0),
+                GUI_APP_ACCENTS.get(str(row.get("app_key") or ""), self.theme["blue"]),
+            )
+            for row in providers
+        ]
+        draw_share_donut(
+            self.share_donut,
+            size=92,
+            slices=slices,
+            bg=self.theme["card"],
+            muted=self.theme["muted"],
+        )
+
+    def _update_activity_dot(self, active: bool) -> None:
+        if self.activity_dot is None:
+            return
+        self.activity_dot.delete("all")
+        color = self.theme["green"] if active else self.theme["muted"]
+        self.activity_dot.create_oval(1, 1, 9, 9, fill=color, outline="")
 
     def update_provider_cards(
         self,
@@ -5376,7 +5481,50 @@ class CodexUsageTrackerGui:
             card.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 6, 6 if index == 0 else 0))
             content = card.content
 
-            self._label(content, str(row.get("app") or "Provider"), font=GUI_FONTS["section"], bg=self.theme["card"]).pack(anchor="w")
+            header_row = tk.Frame(content, bg=self.theme["card"])
+            header_row.pack(fill="x")
+            self._make_app_badge(header_row, app_key, size=48, bg=self.theme["card"]).pack(side="left")
+            title_col = tk.Frame(header_row, bg=self.theme["card"])
+            title_col.pack(side="left", padx=(12, 0), fill="x", expand=True)
+            self._label(
+                title_col,
+                str(row.get("app") or "Provider"),
+                font=GUI_FONTS["section"],
+                color=accent,
+                bg=self.theme["card"],
+            ).pack(anchor="w")
+            basis = str(row.get("token_basis") or "")
+            basis_label = "Exact local tokens" if basis == "exact" else "Cache-estimated tokens" if "cache" in basis else "Activity metrics"
+            self._label(
+                title_col,
+                basis_label,
+                font=GUI_FONTS["caption"],
+                color=self.theme["muted"],
+                bg=self.theme["card"],
+            ).pack(anchor="w", pady=(2, 0))
+
+            mix_canvas = tk.Canvas(content, height=24, bg=self.theme["card"], highlightthickness=0, bd=0)
+            mix_canvas.pack(fill="x", pady=(12, 2))
+
+            def redraw_mix(
+                _event: Any = None,
+                *,
+                canvas: Any = mix_canvas,
+                provider_row: dict[str, Any] = row,
+                provider_accent: str = accent,
+            ) -> None:
+                width = max(int(canvas.winfo_width() or 0), 120)
+                draw_token_mix_bar(
+                    canvas,
+                    width=width,
+                    usage=self._provider_usage(provider_row),
+                    accent=provider_accent,
+                    subtle=self.theme["subtle"],
+                    muted=self.theme["muted"],
+                    bg=self.theme["card"],
+                )
+
+            mix_canvas.bind("<Configure>", redraw_mix)
 
             lifetime_tokens = self.tk.StringVar(value=number(row.get("lifetime_tokens", 0)))
             token_breakdown = self.tk.StringVar(
@@ -5420,7 +5568,15 @@ class CodexUsageTrackerGui:
             detail.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 6, 6 if index == 0 else 0))
             self.provider_detail_frame.columnconfigure(index, weight=1)
             detail_content = detail.content
-            self._label(detail_content, f"{row.get('app')} breakdown", font=GUI_FONTS["section"], bg=self.theme["card"]).pack(anchor="w")
+            detail_header = tk.Frame(detail_content, bg=self.theme["card"])
+            detail_header.pack(fill="x")
+            self._make_app_badge(detail_header, app_key, size=34, bg=self.theme["card"]).pack(side="left")
+            self._label(
+                detail_header,
+                f"{row.get('app')} breakdown",
+                font=GUI_FONTS["section"],
+                bg=self.theme["card"],
+            ).pack(side="left", padx=(10, 0))
             detail_lines = [
                 f"Lifetime: {number(row.get('lifetime_tokens', 0))} tokens",
                 f"Input {number(row.get('lifetime_input_tokens', 0))}  ·  Cached {number(row.get('lifetime_cached_tokens', 0))}  ·  Output {number(row.get('lifetime_output_tokens', 0))}",
@@ -5478,19 +5634,35 @@ class CodexUsageTrackerGui:
 
         max_value = max([int(row["value"]) for row in rows] or [1])
         row_height = max(28, min(36, int((height - 24) / max(len(rows), 1))))
-        label_width = 118
+        label_width = 148 if chart_key == "sources" else 118
         value_width = min(150, max(110, width // 5))
         bar_width = max(60, width - label_width - value_width - 28)
         fallback_color = getattr(canvas, "chart_color", self.theme["blue"])
 
         for index, row in enumerate(rows):
             y = 14 + index * row_height
-            label = self._truncate_text(str(row["label"]), 16)
+            label = self._truncate_text(str(row["label"]), 14 if chart_key == "sources" else 16)
             value = int(row["value"])
             filled = max(3, int((value / max_value) * bar_width)) if max_value else 0
             color = self._chart_bar_color(chart_key, str(row.get("label") or ""), fallback_color)
+            label_x = 10
+            if chart_key == "sources":
+                app_key = app_key_from_label(str(row.get("label") or ""))
+                brand = brand_for_app(app_key)
+                icon_size = 18
+                icon_y = y + row_height / 2 - icon_size / 2
+                canvas.create_oval(
+                    label_x,
+                    icon_y,
+                    label_x + icon_size,
+                    icon_y + icon_size,
+                    fill=brand["surface"],
+                    outline=brand["accent"],
+                    width=1,
+                )
+                label_x += icon_size + 8
             canvas.create_text(
-                10,
+                label_x,
                 y + row_height / 2,
                 text=label,
                 anchor="w",
@@ -5502,18 +5674,27 @@ class CodexUsageTrackerGui:
                 label_width,
                 track_y,
                 label_width + bar_width,
-                track_y + 10,
+                track_y + 12,
                 fill=self.theme["subtle"],
                 outline="",
             )
-            canvas.create_rectangle(
-                label_width,
-                track_y,
-                label_width + filled,
-                track_y + 10,
-                fill=color,
-                outline="",
-            )
+            if filled > 0:
+                canvas.create_rectangle(
+                    label_width,
+                    track_y,
+                    label_width + filled,
+                    track_y + 12,
+                    fill=color,
+                    outline="",
+                )
+                canvas.create_rectangle(
+                    label_width + filled - 4,
+                    track_y,
+                    label_width + filled,
+                    track_y + 12,
+                    fill=color,
+                    outline="",
+                )
             detail = self._truncate_text(str(row.get("detail") or ""), 18)
             value_text = self._truncate_text(number(value), 14)
             if detail:

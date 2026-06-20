@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## v0.2.4 - 2026-06-20
+
+- Added canvas-drawn app badges for Codex, Claude Code, and Cursor across the
+  native GUI header, provider cards, detail panels, and source charts.
+- Added a combined lifetime token donut, per-app token-mix bars, a tri-color
+  header accent strip, and a live activity status dot for a more visual overview.
+
 ## v0.2.3 - 2026-06-20
 
 - Fixed a GUI startup crash (`bad screen distance "0 24"`) caused by invalid

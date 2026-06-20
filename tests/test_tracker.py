@@ -219,6 +219,14 @@ class CodexUsageTrackerTests(unittest.TestCase):
         self.assertEqual(len(model["tables"]["threads"]["rows"]), tracker.GUI_TABLE_ROW_LIMITS["threads"])
         self.assertEqual(model["truncated_tables"]["threads"], (tracker.GUI_TABLE_ROW_LIMITS["threads"], 500))
 
+    def test_gui_brand_helpers_resolve_app_keys(self):
+        import gui_visuals
+
+        self.assertEqual(gui_visuals.app_key_from_label("Codex"), "codex")
+        self.assertEqual(gui_visuals.app_key_from_label("Claude Code"), "claude")
+        self.assertEqual(gui_visuals.app_key_from_label("Cursor"), "cursor")
+        self.assertIn("accent", gui_visuals.brand_for_app("codex"))
+
     def test_dashboard_html_uses_dark_theme_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             threads = tracker.demo_threads()
