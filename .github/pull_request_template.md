@@ -5,7 +5,7 @@
 ## Verification
 
 ```bash
-python -m py_compile codex_app_tracker.py
+python -m py_compile codex_app_tracker.py report_cache.py gui_visuals.py
 python -m unittest discover -s tests -v
 ```
 

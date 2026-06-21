@@ -1,24 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820" role="img" aria-labelledby="title desc">
-  <title id="title">AI coding usage tracker demo dashboard</title>
-  <desc id="desc">A sample local analytics dashboard with app totals, token totals, estimated credits, cache hit rate, searchable tables, and a developer credit footer.</desc>
+  <title id="title">AI Coding Usage Tracker demo dashboard</title>
+  <desc id="desc">A sample local analytics dashboard across Codex, Claude Code, and Cursor with combined lifetime totals, provider logos, cached-input breakdown, searchable tables, and cost estimates.</desc>
   <rect width="1280" height="820" fill="#101114"/>
   <g transform="translate(72 38)" font-family="Segoe UI, Arial, sans-serif">
     <g font-size="12" fill="#a8b0bd">
       <rect x="0" y="0" width="82" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
       <text x="14" y="18">Local-first</text>
-      <rect x="96" y="0" width="104" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
-      <text x="110" y="18">Private reports</text>
-      <rect x="214" y="0" width="112" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
-      <text x="228" y="18">WakaTime ready</text>
-      <rect x="340" y="0" width="118" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
-      <text x="354" y="18">Codex logs</text>
-      <rect x="472" y="0" width="128" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
-      <text x="486" y="18">Claude/Cursor</text>
+      <rect x="96" y="0" width="118" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
+      <text x="110" y="18">Codex + Claude</text>
+      <rect x="228" y="0" width="88" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
+      <text x="242" y="18">+ Cursor</text>
+      <rect x="330" y="0" width="104" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
+      <text x="344" y="18">Native GUI</text>
+      <rect x="448" y="0" width="112" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
+      <text x="462" y="18">Cached refresh</text>
+      <rect x="574" y="0" width="112" height="28" rx="14" fill="#181b20" stroke="#333a45"/>
+      <text x="588" y="18">WakaTime ready</text>
     </g>
     <text x="0" y="76" font-size="34" font-weight="700" fill="#f5f7fa">AI Coding Usage Dashboard</text>
-    <text x="0" y="112" font-size="16" fill="#a8b0bd">Generated from selected local AI coding data. Estimates help with project-level usage, not official billing.</text>
+    <text x="0" y="112" font-size="16" fill="#a8b0bd">Combined lifetime view from local Codex, Claude Code, and Cursor data. HTML, web, and desktop GUI share the same reports.</text>
 
-    <g transform="translate(0 148)">
+    <g transform="translate(0 132)">
+      <rect width="1166" height="56" rx="8" fill="#181b20" stroke="#333a45"/>
+      <circle cx="28" cy="28" r="10" fill="#1a1528" stroke="#9d7cff" stroke-width="2"/>
+      <text x="46" y="33" font-size="14" font-weight="600" fill="#9d7cff">Codex</text>
+      <text x="110" y="33" font-size="13" fill="#a8b0bd">412k tokens</text>
+      <circle cx="220" cy="28" r="10" fill="#241812" stroke="#f59e6c" stroke-width="2"/>
+      <text x="238" y="33" font-size="14" font-weight="600" fill="#f59e6c">Claude</text>
+      <text x="302" y="33" font-size="13" fill="#a8b0bd">198k tokens</text>
+      <circle cx="412" cy="28" r="10" fill="#0f1a20" stroke="#36cfe8" stroke-width="2"/>
+      <text x="430" y="33" font-size="14" font-weight="600" fill="#36cfe8">Cursor</text>
+      <text x="498" y="33" font-size="13" fill="#a8b0bd">77k est.</text>
+      <text x="900" y="33" font-size="13" fill="#36c58c">● Active</text>
+      <text x="980" y="33" font-size="13" fill="#a8b0bd">cache hit 55%</text>
+    </g>
+
+    <g transform="translate(0 208)">
       <g>
         <rect width="210" height="92" rx="8" fill="#181b20" stroke="#333a45"/>
         <text x="18" y="31" font-size="13" fill="#a8b0bd">Apps</text>
@@ -31,7 +48,7 @@
       </g>
       <g transform="translate(468 0)">
         <rect width="250" height="92" rx="8" fill="#181b20" stroke="#333a45"/>
-        <text x="18" y="31" font-size="13" fill="#a8b0bd">Total tokens</text>
+        <text x="18" y="31" font-size="13" fill="#a8b0bd">Lifetime tokens</text>
         <text x="18" y="68" font-size="26" font-weight="700" fill="#36c58c">687,000</text>
       </g>
       <g transform="translate(732 0)">
@@ -46,7 +63,7 @@
       </g>
     </g>
 
-    <g transform="translate(0 262)">
+    <g transform="translate(0 322)">
       <g>
         <rect width="270" height="82" rx="8" fill="#181b20" stroke="#333a45"/>
         <text x="16" y="30" font-size="13" fill="#a8b0bd">Top project</text>
@@ -59,8 +76,8 @@
       </g>
       <g transform="translate(532 0)">
         <rect width="230" height="82" rx="8" fill="#181b20" stroke="#333a45"/>
-        <text x="16" y="30" font-size="13" fill="#a8b0bd">Cache hit rate</text>
-        <text x="16" y="62" font-size="17" font-weight="700" fill="#f5f7fa">55.0%</text>
+        <text x="16" y="30" font-size="13" fill="#a8b0bd">Cached input</text>
+        <text x="16" y="62" font-size="17" font-weight="700" fill="#f5f7fa">229,000</text>
       </g>
       <g transform="translate(778 0)">
         <rect width="230" height="82" rx="8" fill="#181b20" stroke="#333a45"/>
@@ -69,12 +86,12 @@
       </g>
     </g>
 
-    <text x="0" y="438" font-size="20" font-weight="700" fill="#f5f7fa">Usage Tables</text>
-    <rect x="790" y="404" width="376" height="46" rx="7" fill="#181b20" stroke="#333a45"/>
-    <text x="806" y="433" font-size="15" fill="#a8b0bd">Filter tables by project, model, title, or date</text>
+    <text x="0" y="458" font-size="20" font-weight="700" fill="#f5f7fa">Usage Tables</text>
+    <rect x="790" y="424" width="376" height="46" rx="7" fill="#181b20" stroke="#333a45"/>
+    <text x="806" y="453" font-size="15" fill="#a8b0bd">Filter by project, model, app, title, or date</text>
 
-    <text x="0" y="498" font-size="18" font-weight="700" fill="#f5f7fa">Daily Usage</text>
-    <g transform="translate(0 516)">
+    <text x="0" y="518" font-size="18" font-weight="700" fill="#f5f7fa">Daily Usage</text>
+    <g transform="translate(0 536)">
       <rect width="1166" height="122" rx="8" fill="#181b20" stroke="#333a45"/>
       <rect width="1166" height="40" rx="8" fill="#252b33"/>
       <g font-size="13" font-weight="700" fill="#f5f7fa">
@@ -111,8 +128,8 @@
       </g>
     </g>
 
-    <text x="0" y="692" font-size="18" font-weight="700" fill="#f5f7fa">Projects</text>
-    <g transform="translate(0 710)">
+    <text x="0" y="712" font-size="18" font-weight="700" fill="#f5f7fa">Projects</text>
+    <g transform="translate(0 730)">
       <rect width="1166" height="74" rx="8" fill="#181b20" stroke="#333a45"/>
       <rect width="1166" height="40" rx="8" fill="#252b33"/>
       <g font-size="13" font-weight="700" fill="#f5f7fa">
@@ -134,6 +151,6 @@
       </g>
     </g>
 
-    <text x="0" y="806" font-size="13" fill="#a8b0bd">Built by SuvenSeo for developers who want local visibility into AI coding usage.</text>
+    <text x="0" y="806" font-size="13" fill="#a8b0bd">Built by SuvenSeo · v0.2.6 · local HTML, web serve, and native GUI with cached refresh</text>
   </g>
 </svg>

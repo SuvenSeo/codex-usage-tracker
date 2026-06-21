@@ -39,7 +39,9 @@ try {
         --workpath $WorkDir `
         --specpath $SpecDir `
         --add-data "$BrandAssets;assets/gui/brands" `
+        --hidden-import report_cache `
         --hidden-import gui_visuals `
+        --hidden-import report_cache `
         --hidden-import tkinter `
         --hidden-import tkinter.ttk `
         --hidden-import tkinter.messagebox `

@@ -45,6 +45,21 @@ from gui_visuals import (
     draw_share_donut,
     draw_token_mix_bar,
 )
+from report_cache import (
+    build_scan_roots,
+    cache_fingerprints_valid,
+    cached_threads_map,
+    db_fingerprint_matches,
+    fingerprint_matches,
+    load_cached_gui_model,
+    load_cached_snapshot,
+    load_report_cache,
+    prune_file_index,
+    save_report_cache,
+    scan_roots_match,
+    store_db_index,
+    store_file_index,
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -52,7 +67,7 @@ except Exception:  # pragma: no cover - Python without zoneinfo support.
     ZoneInfo = None  # type: ignore[assignment]
 
 
-VERSION = "0.2.5"
+VERSION = "0.2.7"
 TRACKER_DIR = Path(__file__).resolve().parent
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_CLAUDE_HOME = Path.home() / ".claude"
@@ -1677,6 +1692,321 @@ def load_selected_threads(args: argparse.Namespace, report_tz: Any = None) -> li
         key=lambda item: item.get("ended_at") or item.get("started_at") or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
+
+
+def _merge_codex_thread(parsed: dict[str, dict[str, Any]], thread: dict[str, Any]) -> None:
+    key = thread["thread_id"]
+    existing = parsed.get(key)
+    if not existing:
+        parsed[key] = thread
+        return
+    existing_total = usage_total(existing["usage"])
+    current_total = usage_total(thread["usage"])
+    existing_end = existing.get("ended_at") or datetime.min.replace(tzinfo=timezone.utc)
+    current_end = thread.get("ended_at") or datetime.min.replace(tzinfo=timezone.utc)
+    if (current_total, current_end) >= (existing_total, existing_end):
+        parsed[key] = thread
+
+
+def _cached_cursor_map(threads_by_id: dict[str, dict[str, Any]], source: str) -> dict[str, dict[str, Any]]:
+    mapped: dict[str, dict[str, Any]] = {}
+    for thread in threads_by_id.values():
+        if str(thread.get("source") or "") != source:
+            continue
+        merge_key = str(thread.get("thread_id") or "").removeprefix("cursor-")
+        if merge_key:
+            mapped[merge_key] = thread
+    return mapped
+
+
+def _cached_tracking_map(threads_by_id: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    mapped: dict[str, dict[str, Any]] = {}
+    for thread in threads_by_id.values():
+        source = str(thread.get("source") or "")
+        if not source.startswith("cursor_"):
+            continue
+        if source in {"cursor_transcript", "cursor_bubble", "cursor_agentkv"}:
+            continue
+        merge_key = str(thread.get("thread_id") or "").removeprefix("cursor-")
+        if merge_key:
+            mapped[merge_key] = thread
+    return mapped
+
+
+def _cursor_db_paths(args: argparse.Namespace) -> dict[str, Path]:
+    state_db = Path(args.cursor_state_db).expanduser()
+    cursor_db = Path(args.cursor_db).expanduser()
+    return {
+        f"cursor_state:{state_db}": state_db,
+        f"cursor_tracking:{cursor_db}": cursor_db,
+    }
+
+
+def assemble_cached_threads(
+    threads_by_id: dict[str, dict[str, Any]],
+    sources: set[str],
+    *,
+    days: int | None,
+    report_tz: Any = None,
+) -> list[dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    result: dict[str, dict[str, Any]] = {}
+
+    def within_range(thread: dict[str, Any]) -> bool:
+        ended_at = thread.get("ended_at")
+        return not (cutoff and isinstance(ended_at, datetime) and ended_at < cutoff)
+
+    if "codex" in sources:
+        parsed_codex: dict[str, dict[str, Any]] = {}
+        for thread in threads_by_id.values():
+            if thread_app(thread) != "codex" or not within_range(thread):
+                continue
+            _merge_codex_thread(parsed_codex, thread)
+        for thread in parsed_codex.values():
+            result[thread["thread_id"]] = thread
+
+    if "claude" in sources:
+        for thread in threads_by_id.values():
+            if thread_app(thread) != "claude" or not within_range(thread):
+                continue
+            result[thread["thread_id"]] = thread
+
+    if "cursor" in sources:
+        transcript_threads: dict[str, dict[str, Any]] = {}
+        for thread in threads_by_id.values():
+            if str(thread.get("source") or "") != "cursor_transcript" or not within_range(thread):
+                continue
+            conversation_id = str(thread.get("thread_id") or "").removeprefix("cursor-")
+            if conversation_id:
+                transcript_threads[conversation_id] = thread
+        bubble_threads = _cached_cursor_map(threads_by_id, "cursor_bubble")
+        agentkv_threads = _cached_cursor_map(threads_by_id, "cursor_agentkv")
+        tracking_threads = _cached_tracking_map(threads_by_id)
+        cursor_threads = merge_cursor_thread_maps(
+            transcript_threads,
+            bubble_threads,
+            agentkv_threads,
+            tracking_threads,
+            report_tz=report_tz,
+        )
+        for thread in cursor_threads:
+            if within_range(thread):
+                result[thread["thread_id"]] = thread
+
+    return sorted(
+        result.values(),
+        key=lambda item: item.get("ended_at") or item.get("started_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+
+def load_selected_threads_with_cache(
+    args: argparse.Namespace,
+    report_tz: Any,
+    file_index: dict[str, Any],
+    db_index: dict[str, Any],
+    threads_by_id: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Load threads, reusing cached parses when source files are unchanged. Returns (threads, parse_count)."""
+    sources = parse_source_filter(getattr(args, "sources", None))
+    days = getattr(args, "days", None)
+    cache_payload = load_report_cache(args)
+    scan_roots_cached = dict((cache_payload or {}).get("scan_roots") or {})
+    current_scan_roots = build_scan_roots(args, sources)
+    db_paths = _cursor_db_paths(args)
+
+    if (
+        threads_by_id
+        and scan_roots_match(scan_roots_cached, current_scan_roots)
+        and cache_fingerprints_valid(file_index, db_index, db_paths)
+    ):
+        return assemble_cached_threads(threads_by_id, sources, days=days, report_tz=report_tz), 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    parse_count = 0
+    valid_paths: set[str] = set()
+    result: dict[str, dict[str, Any]] = {}
+
+    if "codex" in sources:
+        codex_home = Path(args.codex_home).expanduser()
+        db_meta = read_thread_db(codex_home)
+        parsed_codex: dict[str, dict[str, Any]] = {}
+        for path in iter_rollout_files(codex_home):
+            path_key = str(path)
+            valid_paths.add(path_key)
+            thread: dict[str, Any] | None = None
+            if fingerprint_matches(file_index, path):
+                cached_id = str((file_index.get(path_key) or {}).get("thread_id") or "")
+                cached_thread = threads_by_id.get(cached_id)
+                if cached_thread:
+                    thread = cached_thread
+            if thread is None:
+                try:
+                    thread = parse_rollout(path, db_meta, report_tz=report_tz)
+                except Exception as exc:
+                    print(f"warning: could not parse {path}: {exc}", file=sys.stderr)
+                    continue
+                parse_count += 1
+                threads_by_id[thread["thread_id"]] = thread
+                store_file_index(file_index, path, thread["thread_id"])
+            ended_at = thread.get("ended_at")
+            if cutoff and isinstance(ended_at, datetime) and ended_at < cutoff:
+                continue
+            _merge_codex_thread(parsed_codex, thread)
+        for thread in parsed_codex.values():
+            result[thread["thread_id"]] = thread
+
+    if "claude" in sources:
+        claude_home = Path(args.claude_home).expanduser()
+        for path in iter_claude_files(claude_home):
+            path_key = str(path)
+            valid_paths.add(path_key)
+            thread: dict[str, Any] | None = None
+            if fingerprint_matches(file_index, path):
+                cached_id = str((file_index.get(path_key) or {}).get("thread_id") or "")
+                cached_thread = threads_by_id.get(cached_id)
+                if cached_thread:
+                    thread = cached_thread
+            if thread is None:
+                try:
+                    thread = parse_claude_jsonl(path, report_tz=report_tz)
+                except Exception as exc:
+                    print(f"warning: could not parse {path}: {exc}", file=sys.stderr)
+                    continue
+                parse_count += 1
+                threads_by_id[thread["thread_id"]] = thread
+                store_file_index(file_index, path, thread["thread_id"])
+            ended_at = thread.get("ended_at")
+            if cutoff and isinstance(ended_at, datetime) and ended_at < cutoff:
+                continue
+            result[thread["thread_id"]] = thread
+
+    if "cursor" in sources:
+        projects_home = Path(args.cursor_projects_home).expanduser()
+        state_db = Path(args.cursor_state_db).expanduser()
+        cursor_db = Path(args.cursor_db).expanduser()
+        state_key = f"cursor_state:{state_db}"
+        tracking_key = f"cursor_tracking:{cursor_db}"
+
+        transcript_threads: dict[str, dict[str, Any]] = {}
+        if projects_home.exists():
+            for path in sorted(projects_home.rglob("*.jsonl")):
+                if "agent-transcripts" not in path.parts:
+                    continue
+                path_key = str(path)
+                valid_paths.add(path_key)
+                thread: dict[str, Any] | None = None
+                if fingerprint_matches(file_index, path):
+                    cached_id = str((file_index.get(path_key) or {}).get("thread_id") or "")
+                    cached_thread = threads_by_id.get(cached_id)
+                    if cached_thread:
+                        thread = cached_thread
+                if thread is None:
+                    try:
+                        thread = parse_cursor_transcript_file(path, projects_home, report_tz=report_tz)
+                    except Exception as exc:
+                        print(f"warning: could not parse {path}: {exc}", file=sys.stderr)
+                        continue
+                    if not thread:
+                        continue
+                    parse_count += 1
+                    threads_by_id[thread["thread_id"]] = thread
+                    store_file_index(file_index, path, thread["thread_id"])
+                else:
+                    thread = threads_by_id[thread["thread_id"]]
+                ended_at = thread.get("ended_at")
+                if cutoff and isinstance(ended_at, datetime) and ended_at < cutoff:
+                    continue
+                conversation_id = cursor_transcript_conversation_id(path, projects_home)
+                transcript_threads[conversation_id] = thread
+
+        if db_fingerprint_matches(db_index, state_key, state_db):
+            bubble_threads = _cached_cursor_map(threads_by_id, "cursor_bubble")
+            agentkv_threads = _cached_cursor_map(threads_by_id, "cursor_agentkv")
+        else:
+            bubble_threads = load_cursor_bubble_threads(state_db, days=days, report_tz=report_tz)
+            agentkv_threads = load_cursor_agentkv_threads(state_db, days=days, report_tz=report_tz)
+            parse_count += len(bubble_threads) + len(agentkv_threads)
+            store_db_index(db_index, state_key, state_db)
+            for thread in list(bubble_threads.values()) + list(agentkv_threads.values()):
+                threads_by_id[thread["thread_id"]] = thread
+
+        if db_fingerprint_matches(db_index, tracking_key, cursor_db):
+            tracking_threads = _cached_tracking_map(threads_by_id)
+        else:
+            tracking_threads = load_cursor_tracking_map(cursor_db, days=days, report_tz=report_tz)
+            parse_count += len(tracking_threads)
+            store_db_index(db_index, tracking_key, cursor_db)
+            for thread in tracking_threads.values():
+                threads_by_id[thread["thread_id"]] = thread
+
+        cursor_threads = merge_cursor_thread_maps(
+            transcript_threads,
+            bubble_threads,
+            agentkv_threads,
+            tracking_threads,
+            report_tz=report_tz,
+        )
+        for thread in cursor_threads:
+            result[thread["thread_id"]] = thread
+            threads_by_id[thread["thread_id"]] = thread
+
+    prune_file_index(file_index, valid_paths)
+    stale_ids = [
+        thread_id
+        for thread_id, thread in list(threads_by_id.items())
+        if thread_id not in result
+    ]
+    for thread_id in stale_ids:
+        threads_by_id.pop(thread_id, None)
+
+    return sorted(
+        result.values(),
+        key=lambda item: item.get("ended_at") or item.get("started_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    ), parse_count
+
+
+def load_instant_gui_snapshot(args: argparse.Namespace) -> tuple[dict[str, Any], str] | None:
+    """Load the last dashboard from disk only — no source log scanning."""
+    cached = load_cached_gui_model(args)
+    if cached:
+        return cached
+
+    snapshot = load_cached_snapshot(args)
+    if not snapshot:
+        return None
+    threads_by_id = cached_threads_map(snapshot)
+    if not threads_by_id:
+        return None
+
+    sources = parse_source_filter(getattr(args, "sources", None))
+    days = getattr(args, "days", None)
+    report_tz = resolve_timezone(getattr(args, "timezone", None))
+    threads = assemble_cached_threads(threads_by_id, sources, days=days, report_tz=report_tz)
+    if not threads:
+        return None
+
+    threads = filter_threads_by_date(
+        threads,
+        since=getattr(args, "since", None),
+        until=getattr(args, "until", None),
+        report_tz=report_tz,
+    )
+    threads = apply_privacy(
+        threads,
+        redact=bool(getattr(args, "redact", False)),
+        hash_projects=bool(getattr(args, "hash_projects", False)),
+    )
+    summary = snapshot.get("summary")
+    if not isinstance(summary, dict):
+        summary = aggregate_threads(threads)
+    else:
+        summary = dict(summary)
+    enrich_summary(summary, args)
+    model = build_gui_view_model(threads, summary, report_tz=report_tz)
+    saved_at = str(snapshot.get("saved_at") or "")
+    return model, saved_at
 
 
 def resolve_timezone(name: str | None) -> Any:
@@ -4078,9 +4408,33 @@ def enrich_summary(summary: dict[str, Any], args: argparse.Namespace | None = No
     return summary
 
 
-def load_report_data(args: argparse.Namespace, private_for_sync: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any], Any]:
+def load_report_data(
+    args: argparse.Namespace,
+    private_for_sync: bool = False,
+    *,
+    use_cache: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any], Any, dict[str, Any], dict[str, Any], int]:
     report_tz = resolve_timezone(getattr(args, "timezone", None))
-    threads = load_selected_threads(args, report_tz=report_tz)
+    cache_payload = load_report_cache(args) if use_cache else None
+    file_index: dict[str, Any] = dict((cache_payload or {}).get("file_index") or {})
+    db_index: dict[str, Any] = dict((cache_payload or {}).get("db_index") or {})
+    threads_by_id = cached_threads_map(cache_payload) if cache_payload else {}
+    parse_count = 0
+
+    if use_cache:
+        threads, parse_count = load_selected_threads_with_cache(
+            args,
+            report_tz,
+            file_index,
+            db_index,
+            threads_by_id,
+        )
+    else:
+        threads = load_selected_threads(args, report_tz=report_tz)
+        parse_count = len(threads)
+        file_index = {}
+        db_index = {}
+
     threads = filter_threads_by_date(
         threads,
         since=getattr(args, "since", None),
@@ -4095,6 +4449,20 @@ def load_report_data(args: argparse.Namespace, private_for_sync: bool = False) -
         )
     summary = aggregate_threads(threads)
     enrich_summary(summary, args)
+    return threads, summary, report_tz, file_index, db_index, parse_count
+
+
+def unpack_report_data(
+    args: argparse.Namespace,
+    private_for_sync: bool = False,
+    *,
+    use_cache: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any], Any]:
+    threads, summary, report_tz, *_rest = load_report_data(
+        args,
+        private_for_sync,
+        use_cache=use_cache,
+    )
     return threads, summary, report_tz
 
 
@@ -4262,10 +4630,21 @@ def print_report_summary(summary: dict[str, Any], paths: dict[str, Path]) -> Non
 
 def command_report(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).expanduser()
-    threads, summary, report_tz = load_report_data(args)
+    threads, summary, report_tz, file_index, db_index, _parse_count = load_report_data(args, use_cache=True)
     paths = write_reports(threads, summary, output_dir, report_tz=report_tz)
     paths.update(write_source_audit(output_dir, build_source_audit(args, report_tz=report_tz)))
     print_report_summary(summary, paths)
+    sources = parse_source_filter(getattr(args, "sources", None))
+    model = build_gui_view_model(threads, summary, report_tz=report_tz)
+    save_report_cache(
+        args,
+        threads=threads,
+        summary=summary,
+        file_index=file_index,
+        db_index=db_index,
+        gui_model=model,
+        scan_roots=build_scan_roots(args, sources),
+    )
     return 0
 
 
@@ -4288,7 +4667,7 @@ def command_demo(args: argparse.Namespace) -> int:
 
 
 def command_period_report(args: argparse.Namespace, period: str) -> int:
-    _, summary, _ = load_report_data(args)
+    _, summary, _ = unpack_report_data(args)
     rows = grouped_daily_rows(summary, period)
     key = "date" if period == "daily" else "period"
     return emit_rows(rows, [
@@ -4318,7 +4697,7 @@ def command_monthly(args: argparse.Namespace) -> int:
 
 
 def command_session(args: argparse.Namespace) -> int:
-    threads, _, report_tz = load_report_data(args)
+    threads, _, report_tz = unpack_report_data(args)
     rows = [flatten_thread_for_cli(thread, report_tz=report_tz) for thread in threads]
     rows.sort(key=lambda item: item["tokens"], reverse=True)
     return emit_rows(rows, [
@@ -4337,7 +4716,7 @@ def command_session(args: argparse.Namespace) -> int:
 
 
 def command_project(args: argparse.Namespace) -> int:
-    _, summary, _ = load_report_data(args)
+    _, summary, _ = unpack_report_data(args)
     rows = [
         flatten_summary_row_for_cli(row, {"app": row["app"], "project": row["project"]})
         for row in summary["projects"]
@@ -4360,7 +4739,7 @@ def command_project(args: argparse.Namespace) -> int:
 
 
 def command_model(args: argparse.Namespace) -> int:
-    _, summary, _ = load_report_data(args)
+    _, summary, _ = unpack_report_data(args)
     rows = [
         flatten_summary_row_for_cli(row, {"app": row["app"], "model": row["model"]})
         for row in summary["models"]
@@ -4383,7 +4762,7 @@ def command_model(args: argparse.Namespace) -> int:
 
 
 def command_source(args: argparse.Namespace) -> int:
-    _, summary, _ = load_report_data(args)
+    _, summary, _ = unpack_report_data(args)
     rows = [
         flatten_summary_row_for_cli(row, {"app": row["app"]})
         for row in summary.get("sources", [])
@@ -4506,7 +4885,7 @@ def make_dashboard_handler(args: argparse.Namespace, refresh_seconds: int, url: 
 
             try:
                 if request_path in {"/", "/dashboard.html"}:
-                    threads, summary, report_tz = load_report_data(args)
+                    threads, summary, report_tz = unpack_report_data(args)
                     paths = write_reports(threads, summary, output_dir, report_tz=report_tz)
                     document = paths["dashboard_html"].read_text(encoding="utf-8")
                     data = live_dashboard_document(document, refresh_seconds, url).encode("utf-8")
@@ -4519,7 +4898,7 @@ def make_dashboard_handler(args: argparse.Namespace, refresh_seconds: int, url: 
                     return
 
                 if request_path == "/api/summary":
-                    threads, summary, report_tz = load_report_data(args)
+                    threads, summary, report_tz = unpack_report_data(args)
                     model = build_gui_view_model(threads, summary, report_tz=report_tz)
                     payload = json.dumps({
                         "summary": serializable_summary(summary),
@@ -4908,8 +5287,19 @@ class CodexUsageTrackerGui:
 
         self.build_ui()
         self.search_var.trace_add("write", lambda *_: self.apply_filter())
+        cached = load_instant_gui_snapshot(self.args)
+        if cached:
+            model, saved_at = cached
+            try:
+                saved_label = datetime.fromisoformat(saved_at.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                saved_label = saved_at[:16] if saved_at else "earlier"
+            self.update_view(model)
+            self.status_var.set(f"Cached dashboard from {saved_label} — checking for new usage…")
+        else:
+            self.status_var.set("First scan can take 1–2 minutes — reading local Codex, Claude, and Cursor logs…")
         self.root.after(100, self.poll_events)
-        self.root.after(200, self.start_refresh)
+        self.root.after(800, self.start_refresh)
         self.root.after(self.refresh_seconds * 1000, self.auto_refresh_tick)
 
     def _panel(
@@ -5299,21 +5689,35 @@ class CodexUsageTrackerGui:
         self.worker_running = True
         sources = parse_source_filter(getattr(self.args, "sources", None))
         if "cursor" in sources:
-            self.status_var.set("Scanning Cursor logs — first refresh can take up to a minute.")
+            self.status_var.set("Syncing Cursor logs in background…")
         else:
-            self.status_var.set("Refreshing dashboard…")
+            self.status_var.set("Syncing dashboard in background…")
         thread = threading.Thread(target=self.refresh_worker, daemon=True)
         thread.start()
 
     def refresh_worker(self) -> None:
         try:
-            threads, summary, report_tz = load_report_data(self.args)
+            sources = parse_source_filter(getattr(self.args, "sources", None))
+            threads, summary, report_tz, file_index, db_index, parse_count = load_report_data(
+                self.args,
+                use_cache=True,
+            )
             model = build_gui_view_model(
                 threads,
                 summary,
                 report_tz=report_tz,
                 previous_total_tokens=self.previous_total_tokens,
             )
+            save_report_cache(
+                self.args,
+                threads=threads,
+                summary=summary,
+                file_index=file_index,
+                db_index=db_index,
+                gui_model=model,
+                scan_roots=build_scan_roots(self.args, sources),
+            )
+            model["cache_parse_count"] = parse_count
             self.events.put(("refresh_ok", model))
         except Exception as exc:
             self.events.put(("refresh_error", str(exc)))
@@ -5330,7 +5734,7 @@ class CodexUsageTrackerGui:
     def report_worker(self) -> None:
         try:
             output_dir = Path(self.args.output_dir).expanduser()
-            threads, summary, report_tz = load_report_data(self.args)
+            threads, summary, report_tz = unpack_report_data(self.args)
             paths = write_reports(threads, summary, output_dir, report_tz=report_tz)
             self.events.put(("report_ok", paths["dashboard_html"]))
         except Exception as exc:
@@ -5424,6 +5828,14 @@ class CodexUsageTrackerGui:
         self.draw_chart(self.chart_canvases["models"], model["charts"]["models"], chart_key="models")
         self.apply_filter()
         status = "Dashboard updated."
+        parse_count = model.get("cache_parse_count")
+        if isinstance(parse_count, int):
+            if parse_count == 0:
+                status = "Dashboard updated from cache — no new log files detected."
+            elif parse_count < 25:
+                status = f"Dashboard updated — parsed {parse_count} changed log file(s)."
+            else:
+                status = f"Dashboard updated — parsed {parse_count} log files."
         truncated = model.get("truncated_tables") or {}
         if truncated:
             parts = [
@@ -5490,10 +5902,10 @@ class CodexUsageTrackerGui:
             card.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 6, 6 if index == 0 else 0))
             content = card.content
 
-            header_row = tk.Frame(content, bg=self.theme["card"])
+            header_row = self.tk.Frame(content, bg=self.theme["card"])
             header_row.pack(fill="x")
             self._make_app_badge(header_row, app_key, size=48, bg=self.theme["card"]).pack(side="left")
-            title_col = tk.Frame(header_row, bg=self.theme["card"])
+            title_col = self.tk.Frame(header_row, bg=self.theme["card"])
             title_col.pack(side="left", padx=(12, 0), fill="x", expand=True)
             self._label(
                 title_col,
@@ -5512,7 +5924,7 @@ class CodexUsageTrackerGui:
                 bg=self.theme["card"],
             ).pack(anchor="w", pady=(2, 0))
 
-            mix_canvas = tk.Canvas(content, height=24, bg=self.theme["card"], highlightthickness=0, bd=0)
+            mix_canvas = self.tk.Canvas(content, height=24, bg=self.theme["card"], highlightthickness=0, bd=0)
             mix_canvas.pack(fill="x", pady=(12, 2))
 
             def redraw_mix(
@@ -5577,7 +5989,7 @@ class CodexUsageTrackerGui:
             detail.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 6, 6 if index == 0 else 0))
             self.provider_detail_frame.columnconfigure(index, weight=1)
             detail_content = detail.content
-            detail_header = tk.Frame(detail_content, bg=self.theme["card"])
+            detail_header = self.tk.Frame(detail_content, bg=self.theme["card"])
             detail_header.pack(fill="x")
             self._make_app_badge(detail_header, app_key, size=34, bg=self.theme["card"]).pack(side="left")
             self._label(

@@ -23,11 +23,17 @@ Already implemented in the repo:
 - Cursor parsing from Agent transcripts, Composer bubbles, `agentKv` cache, and
   the AI tracking DB with context-cache token estimates.
 - Combined all-apps lifetime and today totals in CLI and GUI.
-- Redesigned native GUI (v0.2.2): hero banner, per-app cards, Lifetime Totals tab.
+- Native GUI with hero banner, per-app cards, Lifetime Totals tab, provider
+  brand logos, token donut/mix visuals, and activity indicator.
+- GUI disk cache (`~/.codex-usage-tracker/report_cache/`) for instant startup
+  and incremental log refresh.
+- Responsive GUI table caps for very large local histories.
 - `doctor` and `demo` first-run commands.
 - `--redact` and `--hash-projects` privacy controls.
 - Optional WakaTime `ai coding` heartbeat sync.
-- GitHub CI, issue templates, and a trusted-publishing PyPI release workflow.
+- Live local web dashboard via `serve`.
+- Optional billing connector checks and dashboard budget signals.
+- GitHub CI, issue templates, Windows EXE release assets, and trusted-publishing PyPI workflow.
 
 ## Research Snapshot
 
@@ -137,7 +143,7 @@ Goal: expand without pretending every app exposes the same data.
 - Add parser interface: `AgentParser`.
 - Keep Codex as the best-supported parser.
 - Keep Claude Code pricing metadata current as Anthropic model/rate names change.
-- Keep Cursor as activity/edit tracking unless local token totals become available.
+- Keep Cursor token estimates current as local storage formats evolve.
 - Add OpenCode and Gemini CLI support only when local storage formats are clear.
 
 ## 7-Day Execution Plan

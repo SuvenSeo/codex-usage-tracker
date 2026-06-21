@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Renamed GitHub repository references from `codex-usage-tracker` to
+  `ai-coding-usage-tracker` across docs, badges, and publishing metadata.
+  PyPI package name, local cache dir, and legacy CLI alias are unchanged.
+## v0.2.7 - 2026-06-20
+
+- GUI launches instantly from the on-disk cache when available (~0.25s) instead of
+  waiting for a full log rescan.
+- Added a zero-scan fast path when source folders and file fingerprints are unchanged
+  (sub-second background sync instead of re-walking every log file).
+- `report` now warms the GUI cache automatically so the desktop app has data on
+  first open after a CLI report run.
+- Clearer first-run status text when no cache exists yet.
+
+## v0.2.6 - 2026-06-20
+
+- Added a disk report cache (`~/.codex-usage-tracker/report_cache/`) so the GUI
+  shows the last dashboard instantly on launch, then syncs in the background.
+- Incremental refresh re-parses only log files whose size or modification time
+  changed; unchanged Codex, Claude, and Cursor transcripts are reused from cache.
+- Status text now reports whether a refresh used cache only or parsed new files.
+
 ## v0.2.5 - 2026-06-20
 
 - Replaced stylized GUI badges with bundled real brand logos for Codex

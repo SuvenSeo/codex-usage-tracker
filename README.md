@@ -7,6 +7,8 @@
 
 Local-first usage analytics for Codex, Claude Code, and Cursor.
 
+**Repo:** [github.com/SuvenSeo/ai-coding-usage-tracker](https://github.com/SuvenSeo/ai-coding-usage-tracker) · **CLI:** `ai-coding-usage-tracker` · **PyPI:** `codex-usage-tracker` · **v0.2.6**
+
 AI Coding Usage Tracker reads local AI coding data and generates a private
 dashboard for token usage, app/source totals, estimated Codex credits,
 estimated USD, project breakdowns, terminal reports, and optional WakaTime
@@ -35,7 +37,8 @@ This tool gives you those answers locally, without uploading Codex transcripts t
 - Generates `HTML`, `CSV`, and `JSON` reports
 - Serves a live local web dashboard with auto-refresh on `127.0.0.1`
 - Shows trend bars, provider comparison tabs, budget signals, and connector status
-- Native GUI with combined lifetime totals, per-app cards, and a **Lifetime Totals** tab
+- Native GUI with combined lifetime totals, per-app cards, brand logos, and a **Lifetime Totals** tab
+- GUI disk cache for instant startup and incremental refresh across Codex, Claude, and Cursor logs
 - Prints `daily`, `weekly`, `monthly`, `session`, `project`, `model`, and `source` terminal reports
 - Estimates Codex credits from input, cached input, and output tokens
 - Shows estimated USD for Codex, Claude Code, and Cursor where local token logs and known rates exist
@@ -132,13 +135,20 @@ Open the live native desktop dashboard:
 ai-coding-usage-tracker --sources all gui
 ```
 
-The GUI (v0.2.2+) uses Python's built-in Tkinter toolkit and polls selected local
-sources every 10 seconds by default. It opens in dark mode, shows:
+The GUI uses Python's built-in Tkinter toolkit and polls selected local sources
+every 10 seconds by default. It opens in dark mode and shows:
 
-- **Overview** — combined lifetime hero, Codex / Claude / Cursor cards with cached
-  token breakdown, quick stats, and app/daily charts
+- **Overview** — combined lifetime hero with token-mix bars and a provider donut,
+  Codex / Claude / Cursor cards with cached token breakdown and brand logos,
+  quick stats, app/daily charts, and a live activity indicator
 - **Lifetime Totals** — full provider table plus project/model charts
 - **Apps, Daily, Projects, Models, Threads, Signals, Billing** — sortable tables
+  (large tables are capped for responsiveness; HTML report keeps the full dataset)
+
+On launch, the GUI restores the last dashboard from
+`~/.codex-usage-tracker/report_cache/` when available, then syncs in the
+background. Incremental refresh re-parses only log files whose size or
+modification time changed.
 
 The packaged Windows EXE defaults to `--sources all`. The first Cursor refresh can
 take up to a minute while local transcripts and cache blobs are scanned.
@@ -176,7 +186,8 @@ python -m pip install -e ".[build]"
 
 The generated app is written to `dist\AICodingUsageTracker.exe`. Double-clicking it
 opens the live GUI with Codex, Claude Code, and Cursor selected. It reads only
-local data folders on your machine.
+local data folders on your machine and bundles provider brand logos from
+`assets/gui/brands/`.
 
 Install it as a normal user-level Windows app:
 
@@ -294,6 +305,11 @@ By default, reports are written to `out/`:
 - `sources.csv`
 - `projects.csv`
 - `models.csv`
+- `source_audit.json` and `source_audit.md` (from `source-audit`)
+
+The GUI also writes a local disk cache under `~/.codex-usage-tracker/report_cache/`
+for faster startup and incremental refresh. That cache can include token totals,
+project names, and thread metadata from your machine.
 
 Do not commit generated reports. They can include private local paths, project names, thread titles, and usage details unless you use privacy flags.
 
@@ -339,10 +355,24 @@ The near-term goal is to keep Codex as the deepest parser while adding honest lo
 
 ## Development
 
+Repository layout:
+
+| Path | Purpose |
+| --- | --- |
+| `codex_app_tracker.py` | CLI, parsers, reports, `serve`, and native GUI |
+| `report_cache.py` | Disk cache for GUI startup and incremental refresh |
+| `gui_visuals.py` | Brand logos, donut/mix-bar charts, canvas helpers |
+| `codex_usage_tracker_gui.py` | Windows EXE entry point (`--sources all gui`) |
+| `assets/gui/brands/` | Bundled Codex, Claude, and Cursor logos |
+| `scripts/` | Windows build/install helpers and brand asset generator |
+| `docs/` | Privacy, roadmap, publishing, launch notes, and [architecture](docs/ARCHITECTURE.md) |
+| `examples/` | Sample CSV/JSON outputs for docs and tests |
+| `tests/` | Unit tests |
+
 Run checks:
 
 ```bash
-python -m py_compile codex_app_tracker.py
+python -m py_compile codex_app_tracker.py report_cache.py gui_visuals.py
 python -m unittest discover -s tests -v
 ```
 
@@ -362,6 +392,15 @@ for the privacy rules and PR checklist.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md).
 
+## Architecture
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module layout, data flow, parsers, and output surfaces.
+
+## GitHub Profile
+
+Repo description, topics, and social copy: [docs/GITHUB_PROFILE.md](docs/GITHUB_PROFILE.md).
+Repository rename options: [docs/RENAMING.md](docs/RENAMING.md).
+
 ## Built By
 
 Built by [SuvenSeo](https://github.com/SuvenSeo) for developers who want local visibility into AI coding usage.
@@ -369,9 +408,9 @@ Built by [SuvenSeo](https://github.com/SuvenSeo) for developers who want local v
 ## Status
 
 Early alpha. Codex, Claude Code, and Cursor local storage formats may change, so
-parser compatibility can break. **v0.2.2** adds Cursor context-cache token
-estimates and a redesigned native GUI with combined lifetime totals. The Python
-package is published on
+parser compatibility can break. **v0.2.6** adds a GUI disk cache for instant
+startup and incremental refresh, bundled provider brand logos, and responsive
+table caps for large local histories. The Python package is published on
 [PyPI](https://pypi.org/project/codex-usage-tracker/) and can be installed with
 `pipx install codex-usage-tracker` or `python -m pip install codex-usage-tracker`.
 Issues and PRs are welcome.

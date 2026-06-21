@@ -37,7 +37,7 @@ On macOS/Linux, activate the virtualenv with `source .venv/bin/activate`.
 Before opening a PR, run:
 
 ```bash
-python -m py_compile codex_app_tracker.py
+python -m py_compile codex_app_tracker.py report_cache.py gui_visuals.py
 python -m unittest discover -s tests -v
 ```
 
@@ -52,6 +52,7 @@ python -m build
 
 - Do not commit generated `out/` reports or `.tracker_state.json`; they can
   contain private local paths and thread names.
+- Do not commit GUI report cache files from `~/.codex-usage-tracker/report_cache/`.
 - Do not paste private prompts, responses, API keys, raw rollout logs, Claude
   Code transcripts, Cursor databases, or raw `~/.codex` contents into issues.
 - Use `ai-coding-usage-tracker --redact --hash-projects doctor` when sharing debug
@@ -63,6 +64,7 @@ python -m build
 - Explain the user-visible change.
 - Include tests or a manual verification command.
 - Update README/docs when commands, outputs, privacy behavior, or install steps
-  change.
+  change. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) when adding parsers or
+  new output surfaces.
 - Keep changes focused; unrelated refactors should be separate PRs.
 

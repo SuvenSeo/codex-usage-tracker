@@ -4,9 +4,9 @@ This project is ready for a normal PyPI trusted publishing setup.
 
 Current state:
 
-- `v0.1.1` is published as a GitHub Release.
-- The Windows release asset is now built as `AICodingUsageTracker.exe` with a
-  SHA256 checksum asset.
+- `v0.2.6` is the current package version in `pyproject.toml` and `codex_app_tracker.py`.
+- The Windows release asset is built as `AICodingUsageTracker.exe` with a
+  SHA256 checksum asset and bundled GUI brand logos.
 - PyPI trusted publishing is configured and working.
 - `codex-usage-tracker` is published on PyPI:
   `https://pypi.org/project/codex-usage-tracker/`.
@@ -14,7 +14,7 @@ Current state:
 ## Local Checks
 
 ```bash
-python -m py_compile codex_app_tracker.py
+python -m py_compile codex_app_tracker.py report_cache.py gui_visuals.py
 python -m unittest discover -s tests -v
 python -m pip install build
 python -m build

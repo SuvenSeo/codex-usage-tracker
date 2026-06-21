@@ -12,7 +12,7 @@ Do not paste private Codex rollout logs, Claude Code transcripts, Cursor databas
 
 ## Data Handling
 
-The tracker runs locally. Depending on `--sources`, it reads Codex app logs from `~/.codex`, Claude Code logs from `~/.claude/projects`, and Cursor AI tracking metadata from `~/.cursor/ai-tracking`. It writes reports to a local output directory.
+The tracker runs locally. Depending on `--sources`, it reads Codex app logs from `~/.codex`, Claude Code logs from `~/.claude/projects`, and Cursor data from Agent transcripts, Composer/agent cache blobs, and `~/.cursor/ai-tracking`. It writes reports to a local output directory and may cache parsed GUI summaries under `~/.codex-usage-tracker/report_cache/`.
 
 When WakaTime sync is enabled, it sends activity heartbeats through `wakatime-cli`. It does not send token totals to WakaTime.
 

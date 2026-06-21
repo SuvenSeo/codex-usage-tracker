@@ -32,7 +32,7 @@ OUTPUTS = {
 
 
 def fetch_url(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "codex-usage-tracker/0.2.5"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ai-coding-usage-tracker/0.2.6"})
     with urllib.request.urlopen(request, timeout=30) as response:
         return response.read()
 

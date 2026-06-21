@@ -7,7 +7,7 @@ This tool is designed to be local-first.
 - Codex rollout JSONL files under `~/.codex/sessions`
 - Codex metadata from `~/.codex/state_5.sqlite`, if available
 - Claude Code project JSONL files under `~/.claude/projects`, when selected with `--sources claude` or `--sources all`
-- Cursor AI tracking metadata from `~/.cursor/ai-tracking/ai-code-tracking.db`, when selected with `--sources cursor` or `--sources all`
+- Cursor Agent transcripts, Composer bubbles, `agentKv` cache blobs, and AI tracking metadata, when selected with `--sources cursor` or `--sources all`
 - WakaTime config presence from `~/.wakatime.cfg`, only to verify that an API key exists
 - Optional admin-key environment variable presence for `OPENAI_ADMIN_KEY`,
   `ANTHROPIC_ADMIN_KEY`, and `CURSOR_ADMIN_API_KEY`
@@ -16,6 +16,7 @@ This tool is designed to be local-first.
 
 - Local JSON, CSV, and HTML reports under `out/` by default
 - A state file used to avoid sending duplicate WakaTime heartbeats. The default CLI location is `~/.codex-usage-tracker/state.json`; the included Windows scheduled task stores `.tracker_state.json` in the repo checkout.
+- A GUI report cache under `~/.codex-usage-tracker/report_cache/` used for instant dashboard startup and incremental refresh. Cached files can include parsed thread summaries, token totals, project names, and file fingerprints for local log sources.
 
 ## What Can Be Sensitive
 

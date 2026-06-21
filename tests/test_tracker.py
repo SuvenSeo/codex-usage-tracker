@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import io
 import json
@@ -249,6 +250,103 @@ class CodexUsageTrackerTests(unittest.TestCase):
             self.assertGreater(int(photo.width()), 0)
         finally:
             root.destroy()
+
+    def test_report_cache_roundtrip(self):
+        import report_cache
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            args = argparse.Namespace(
+                sources="codex",
+                days=None,
+                since=None,
+                until=None,
+                timezone=None,
+                codex_home=str(Path(tmp) / ".codex"),
+                claude_home=str(Path(tmp) / ".claude"),
+                cursor_db=str(Path(tmp) / "cursor.db"),
+                cursor_state_db=str(Path(tmp) / "state.vscdb"),
+                cursor_projects_home=str(Path(tmp) / "projects"),
+                cache_dir=str(cache_dir),
+            )
+            threads = tracker.demo_threads()
+            summary = tracker.aggregate_threads(threads)
+            model = tracker.build_gui_view_model(threads, summary)
+            report_cache.save_report_cache(
+                args,
+                threads=threads,
+                summary=summary,
+                file_index={"demo": {"mtime_ns": 1, "size": 2, "thread_id": threads[0]["thread_id"]}},
+                db_index={},
+                gui_model=model,
+            )
+            loaded = report_cache.load_cached_gui_model(args)
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            cached_model, saved_at = loaded
+            self.assertEqual(cached_model["metrics"][0][0], model["metrics"][0][0])
+            self.assertTrue(saved_at)
+
+    def test_fast_cache_path_when_scan_roots_unchanged(self):
+        import report_cache
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            codex_home = Path(tmp) / ".codex"
+            sessions = codex_home / "sessions" / "2026" / "06" / "20"
+            sessions.mkdir(parents=True)
+            rollout = sessions / "rollout-demo.jsonl"
+            rollout.write_text(
+                '{"type":"turn_context","payload":{"thread_id":"t1","cwd":"/tmp","turn_context":{"model":"gpt-5.4"}}}\n',
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                sources="codex",
+                days=None,
+                since=None,
+                until=None,
+                timezone=None,
+                codex_home=str(codex_home),
+                claude_home=str(Path(tmp) / ".claude"),
+                cursor_db=str(Path(tmp) / "cursor.db"),
+                cursor_state_db=str(Path(tmp) / "state.vscdb"),
+                cursor_projects_home=str(Path(tmp) / "projects"),
+                cache_dir=str(cache_dir),
+            )
+            threads_first, parse_first = tracker.load_selected_threads_with_cache(
+                args,
+                None,
+                {},
+                {},
+                {},
+            )
+            self.assertEqual(parse_first, 1)
+            sources = tracker.parse_source_filter("codex")
+            scan_roots = report_cache.build_scan_roots(args, sources)
+            file_index: dict[str, Any] = {}
+            db_index: dict[str, Any] = {}
+            threads_by_id = {thread["thread_id"]: thread for thread in threads_first}
+            for thread in threads_first:
+                report_cache.store_file_index(file_index, Path(thread["path"]), thread["thread_id"])
+            report_cache.save_report_cache(
+                args,
+                threads=threads_first,
+                summary=tracker.aggregate_threads(threads_first),
+                file_index=file_index,
+                db_index=db_index,
+                scan_roots=scan_roots,
+            )
+            cache_payload = report_cache.load_report_cache(args)
+            assert cache_payload is not None
+            threads_second, parse_second = tracker.load_selected_threads_with_cache(
+                args,
+                None,
+                dict(cache_payload.get("file_index") or {}),
+                dict(cache_payload.get("db_index") or {}),
+                report_cache.cached_threads_map(cache_payload),
+            )
+            self.assertEqual(parse_second, 0)
+            self.assertEqual(len(threads_second), len(threads_first))
 
     def test_dashboard_html_uses_dark_theme_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
